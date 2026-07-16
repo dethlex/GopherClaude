@@ -1,0 +1,16 @@
+# Build artifacts
+bin/
+build/
+*.uf2
+
+# Internal design docs and assistant instructions (not published)
+docs/
+CLAUDE.md
+
+# IDE / editor
+.idea/
+.vscode/
+.DS_Store
+
+# Unrelated local assets (3D-print figurine, etc.)
+gryzo-cat/
