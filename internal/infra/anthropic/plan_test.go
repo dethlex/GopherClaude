@@ -243,6 +243,30 @@ func TestPlanBacksOffOnRateLimit(t *testing.T) {
 	}
 }
 
+func TestTokenExpired(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		millis  int64
+		expired bool
+	}{
+		{"zero means unknown, not expired", 0, false},
+		{"well in the future", now.Add(time.Hour).UnixMilli(), false},
+		{"already past", now.Add(-time.Hour).UnixMilli(), true},
+		{"within skew counts as expired", now.Add(30 * time.Second).UnixMilli(), true},
+		{"just beyond skew is still valid", now.Add(2 * time.Minute).UnixMilli(), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tokenExpired(tt.millis, now); got != tt.expired {
+				t.Errorf("tokenExpired = %v, want %v", got, tt.expired)
+			}
+		})
+	}
+}
+
 func TestFormatCredits(t *testing.T) {
 	tests := []struct {
 		cents float64

@@ -279,9 +279,21 @@ func formatCredits(cents float64) string {
 	return s
 }
 
-// keychainToken reads the Claude Code OAuth access token from the macOS
-// login keychain, exactly like the CLI itself does. The `security` binary is
-// used (instead of keychain APIs) so the ACL treats us like any other CLI.
+var errTokenExpired = errors.New("oauth token expired; waiting for Claude Code to refresh it")
+
+// expirySkew treats a token as expired slightly early so it is not used right
+// as it lapses mid-request.
+const expirySkew = 60 * time.Second
+
+// keychainToken reads the Claude Code OAuth access token from the macOS login
+// keychain, exactly like the CLI itself does. The `security` binary is used
+// (instead of keychain APIs) so the ACL treats us like any other CLI.
+//
+// When the stored token is already expired it returns errTokenExpired without
+// a token: the agent does not own the refresh flow (that would rotate the
+// refresh token and could log Claude Code out), so it must wait for Claude
+// Code to refresh the credential. Skipping the call also avoids hammering the
+// rate-limited endpoint with requests that can only 401.
 func keychainToken(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx,
 		"security", "find-generic-password", "-s", keychainService, "-w",
@@ -293,6 +305,7 @@ func keychainToken(ctx context.Context) (string, error) {
 	var creds struct {
 		ClaudeAiOauth struct {
 			AccessToken string `json:"accessToken"`
+			ExpiresAt   int64  `json:"expiresAt"`
 		} `json:"claudeAiOauth"`
 	}
 
@@ -304,5 +317,19 @@ func keychainToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("keychain item %q has no access token", keychainService)
 	}
 
+	if tokenExpired(creds.ClaudeAiOauth.ExpiresAt, time.Now()) {
+		return "", errTokenExpired
+	}
+
 	return creds.ClaudeAiOauth.AccessToken, nil
+}
+
+// tokenExpired reports whether an expiresAt (unix millis) is at or past now,
+// minus a small skew. A missing/zero expiry is treated as not expired.
+func tokenExpired(expiresAtMillis int64, now time.Time) bool {
+	if expiresAtMillis == 0 {
+		return false
+	}
+
+	return !now.Before(time.UnixMilli(expiresAtMillis).Add(-expirySkew))
 }
