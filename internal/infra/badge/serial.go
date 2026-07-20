@@ -28,6 +28,13 @@ const (
 	// Drop a partial reply line that grows past this without a newline —
 	// it can only be noise from a half-open port.
 	maxRxAccum = 512
+
+	// The badge echoes "ok chats=…" for every frame it receives. If nothing
+	// comes back for this long the handle is stale — the badge re-enumerated
+	// (a USB glitch, a watchdog reset, standby) and macOS keeps accepting
+	// writes into the void without an error. Drop the port so the next Send
+	// reopens it. ~4 missed 2s frames.
+	echoSilenceTimeout = 8 * time.Second
 )
 
 var errNoPort = errors.New("no usb serial port found")
@@ -39,9 +46,10 @@ type SerialSink struct {
 	requested string
 	logger    *slog.Logger
 
-	port  serial.Port
-	path  string
-	rxBuf []byte // carries a partial reply line between Sends
+	port      serial.Port
+	path      string
+	rxBuf     []byte    // carries a partial reply line between Sends
+	lastReply time.Time // when the badge last sent anything back
 }
 
 func NewSerialSink(port string, logger *slog.Logger) *SerialSink {
@@ -52,13 +60,17 @@ func NewSerialSink(port string, logger *slog.Logger) *SerialSink {
 }
 
 func (s *SerialSink) Send(snapshot domain.Snapshot) ([]domain.Command, error) {
+	now := time.Now()
+
 	if s.port == nil {
 		if err := s.open(); err != nil {
 			return nil, err
 		}
+
+		s.lastReply = now // grace period before the first echo
 	}
 
-	line := Encode(snapshot, time.Now()) + "\n"
+	line := Encode(snapshot, now) + "\n"
 
 	if _, err := s.port.Write([]byte(line)); err != nil {
 		s.drop()
@@ -66,7 +78,18 @@ func (s *SerialSink) Send(snapshot domain.Snapshot) ([]domain.Command, error) {
 		return nil, fmt.Errorf("write to %q: %w", s.path, err)
 	}
 
-	return s.readReplies(), nil
+	cmds := s.readReplies(now)
+
+	// Writes to a stale usb-cdc handle succeed silently on macOS, so a dead
+	// badge is only visible as the echo going quiet.
+	if now.Sub(s.lastReply) > echoSilenceTimeout {
+		s.logger.Warn("no reply from badge, reopening port",
+			"silent", now.Sub(s.lastReply).Round(time.Second).String(),
+		)
+		s.drop()
+	}
+
+	return cmds, nil
 }
 
 func (s *SerialSink) Close() error {
@@ -147,12 +170,13 @@ func (s *SerialSink) drop() {
 // readReplies drains whatever the badge sent back, splits it into lines and
 // returns any button commands. Draining also keeps the badge's TX buffer from
 // filling; the "ok chats=N wait=M" debug echo is logged, not returned.
-func (s *SerialSink) readReplies() []domain.Command {
+func (s *SerialSink) readReplies(now time.Time) []domain.Command {
 	buf := make([]byte, echoBufSize)
 
 	n, err := s.port.Read(buf)
 	if err == nil && n > 0 {
 		s.rxBuf = append(s.rxBuf, buf[:n]...)
+		s.lastReply = now
 	}
 
 	var cmds []domain.Command
