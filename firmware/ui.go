@@ -43,6 +43,16 @@ const (
 	soundIconW = 20
 	soundIconH = 16
 
+	// Spinner (work in progress), left of the speaker slot.
+	spinnerX       = 244
+	spinnerY       = 4
+	spinnerW       = 20
+	spinnerH       = 16
+	spinnerCX      = spinnerX + spinnerW/2
+	spinnerCY      = spinnerY + spinnerH/2
+	spinnerDotSize = 3
+	spinnerSteps   = 8
+
 	countsBaseline = 50
 	countsTop      = 28
 	countsH        = 26
@@ -102,10 +112,26 @@ var (
 	colBarOK  = color.RGBA{40, 120, 240, 255}
 	colSelBg  = color.RGBA{0, 45, 75, 255}
 
+	// Spinner head plus a fading two-dot tail.
+	colSpinHead  = color.RGBA{0, 200, 245, 255}
+	colSpinTrail = color.RGBA{0, 95, 120, 255}
+	colSpinTail  = color.RGBA{0, 45, 60, 255}
+
 	activePage = pageDashboard
 
 	// selRow is the highlighted row on the session list page; A opens it.
 	selRow int
+
+	// spinnerPhase is the animation step; spinnerShown is what is currently
+	// on screen (-1 = the slot is blank), so the slot is only repainted when
+	// it actually changes.
+	spinnerPhase int
+	spinnerShown = -1
+
+	// Dot offsets around the circle, clockwise from the top (radius ~5).
+	spinnerDots = [spinnerSteps][2]int16{
+		{0, -5}, {4, -4}, {5, 0}, {4, 4}, {0, 5}, {-4, 4}, {-5, 0}, {-4, -4},
+	}
 )
 
 // uiCache keeps the last drawn value per region so render only repaints
@@ -159,8 +185,66 @@ func drawStaticUI() {
 		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, weekLabelBase, "WEEKLY", colLabel)
 		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, credLabelBase, "CREDITS", colLabel)
 	} else {
-		writeRightAligned(&freemono.Regular9pt7b, soundIconX-6, headerBaseline, "SESSIONS", colLabel)
+		// Short label: the spinner slot took the room a longer one would
+		// need, and "CLAUDE CONTROL" already reaches x=162.
+		writeRightAligned(&freemono.Regular9pt7b, spinnerX-6, headerBaseline, "LIST", colLabel)
 	}
+}
+
+// workingSessions is how many sessions are busy: every session is either
+// working or waiting, so the two counters the badge already receives give the
+// answer without an extra protocol field.
+func workingSessions(f frame) int {
+	n := f.chats - f.wait
+	if n < 0 {
+		return 0
+	}
+
+	return n
+}
+
+// advanceSpinner steps the animation; the caller decides how often.
+func advanceSpinner() {
+	spinnerPhase = (spinnerPhase + 1) % spinnerSteps
+}
+
+// renderSpinner paints the progress spinner when work is in flight, and blanks
+// the slot otherwise. hidden covers standby / lying flat, where the screen is
+// dark and there is nothing to animate.
+func renderSpinner(f frame, linked, hidden bool) {
+	if !linked || hidden || workingSessions(f) == 0 {
+		if spinnerShown != -1 {
+			display.FillRectangle(spinnerX, spinnerY, spinnerW, spinnerH, colBg)
+			spinnerShown = -1
+		}
+
+		return
+	}
+
+	if spinnerShown == spinnerPhase {
+		return
+	}
+
+	for i := 0; i < spinnerSteps; i++ {
+		c := colBg
+
+		// i counted backwards from the head: head, then a fading tail.
+		switch (spinnerPhase - i + spinnerSteps) % spinnerSteps {
+		case 0:
+			c = colSpinHead
+		case 1:
+			c = colSpinTrail
+		case 2:
+			c = colSpinTail
+		}
+
+		display.FillRectangle(
+			spinnerCX+spinnerDots[i][0]-spinnerDotSize/2,
+			spinnerCY+spinnerDots[i][1]-spinnerDotSize/2,
+			spinnerDotSize, spinnerDotSize, c)
+	}
+
+	spinnerShown = spinnerPhase
 }
 
 // drawSoundIcon paints a crossed-out speaker while the buzzer is disabled,
@@ -194,6 +278,7 @@ func switchPage(f frame, linked bool) {
 	display.FillScreen(colBg)
 
 	drawn = uiCache{}
+	spinnerShown = -1 // the full wipe cleared the slot too
 
 	drawStaticUI()
 	render(f, linked)

@@ -40,6 +40,10 @@ const (
 	// chat is not forgotten. Button A / sound-off / rest all silence it.
 	renudgeInterval = 2 * time.Minute
 
+	// Spinner animation step: 8 steps per revolution, ~1s per turn. Purely
+	// visual — it never counts as activity, so it cannot hold off standby.
+	spinnerPeriod = 125 * time.Millisecond
+
 	// Hardware watchdog: if the main loop ever stalls this long (e.g. a
 	// wedged I2C read of the accelerometer), the chip resets itself and
 	// the firmware restarts instead of freezing on a stale screen. The
@@ -71,6 +75,7 @@ func main() {
 		standby      bool
 		lastRx       time.Time
 		lastBlink    time.Time
+		lastSpin     time.Time
 		alertUntil   time.Time
 		lastNudge    time.Time
 		lastActivity = time.Now()
@@ -257,6 +262,15 @@ func main() {
 				updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
 			}
 			// While resting or in standby: screen and eyes stay dark.
+		}
+
+		// The spinner runs on its own timer and also picks up work
+		// starting/stopping, so no extra redraw is needed elsewhere.
+		if now.Sub(lastSpin) >= spinnerPeriod {
+			lastSpin = now
+
+			advanceSpinner()
+			renderSpinner(state, linked, standby || restTicks >= restDebounce)
 		}
 
 		if !isResting && !standby && now.Sub(lastActivity) > standbyTimeout {

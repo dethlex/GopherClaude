@@ -11,7 +11,7 @@ blocked chat — with light and sound.
 
 ```
 ┌─────────────────────────────────┐
-│ CLAUDE CONTROL                ● │
+│ CLAUDE CONTROL              ◐ ● │
 │ CHATS 4                  WAIT 2 │
 │ 5-HOUR                   44% 3h │
 │ [██████████··············]      │
@@ -24,6 +24,7 @@ blocked chat — with light and sound.
 └─────────────────────────────────┘
 ```
 
+- **`◐`** — progress spinner: animates while any session is actually working.
 - **`●`** — link status: green when the agent is connected, red when not.
 - **Bars** — 5-hour / weekly / credits usage; blue, amber at ≥70%, red at ≥90%.
 - **Bottom line** — the alert banner: `ALL QUIET`, the alerting project and
@@ -45,6 +46,9 @@ blocked chat — with light and sound.
 - **Jump to a chat** — move the cursor with the D-pad (up/down) and press
   **A**; the agent foregrounds that session's window on the Mac (terminal or
   Claude Desktop). On the dashboard, **A** jumps to the alerting session.
+- **Work-in-progress spinner** — a small animated spinner in the header spins
+  whenever at least one session is actually working (model generating or a tool
+  running), so "busy" is distinguishable from "idle but connected" at a glance.
 - **Notifications** — a two-tone chirp on a new "waiting" event, then a single
   reminder beep every ~2 minutes while a session stays blocked. The NeoPixel
   "eyes" blink amber for ~8 seconds on a new event, then hold a steady amber
