@@ -13,7 +13,21 @@ const (
 	reasonInput      = "INPUT"
 )
 
-const statusIdle = "idle"
+// Registry statuses that mean the session is not busy. Claude Code writes
+// these for cli sessions; claude-desktop ones carry no status at all.
+const (
+	statusIdle    = "idle"
+	statusWaiting = "waiting"
+)
+
+// workingEventTTL bounds how long a "working" hook event stays authoritative.
+// Hooks are lossy: claude-desktop sessions never emit Stop, so the last event
+// of a finished turn is a PostToolUse — and without an expiry that would pin
+// the session to "working" forever (a spinner that never stops). "Waiting"
+// events get no expiry on purpose: a permission dialog can sit for hours and
+// the transcript cannot tell one from a running tool, while "working" is
+// momentary and the transcript detects it reliably on its own.
+const workingEventTTL = 30 * time.Second
 
 // Resolver determines each session's phase, combining sources by precedence:
 // hook events (exact) > registry status (cli sessions only) > transcript
@@ -55,7 +69,7 @@ func (r *Resolver) resolve(session domain.Session, events map[string]Event, now 
 	}
 
 	if event, ok := events[session.ID]; ok {
-		if phase, decisive := event.Phase(); decisive {
+		if phase, decisive := event.Phase(); decisive && eventAuthoritative(phase, event.At, now) {
 			return domain.SessionState{
 				Session:   session,
 				Phase:     phase,
@@ -67,7 +81,7 @@ func (r *Resolver) resolve(session domain.Session, events map[string]Event, now 
 	}
 
 	phase := tailPhase
-	if session.Status == statusIdle {
+	if session.Status == statusIdle || session.Status == statusWaiting {
 		phase = domain.PhaseWaitingInput
 	}
 
@@ -78,6 +92,16 @@ func (r *Resolver) resolve(session domain.Session, events map[string]Event, now 
 		Since:     now,
 		CtxTokens: ctxTokens,
 	}
+}
+
+// eventAuthoritative reports whether a hook event may still decide the phase:
+// waiting events are durable, working ones expire (see workingEventTTL).
+func eventAuthoritative(phase domain.Phase, at, now time.Time) bool {
+	if phase.Waiting() {
+		return true
+	}
+
+	return !now.After(at.Add(workingEventTTL))
 }
 
 func reasonFor(phase domain.Phase) string {
