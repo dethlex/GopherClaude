@@ -51,8 +51,20 @@ blocked chat — with light and sound.
   running), so "busy" is distinguishable from "idle but connected" at a glance.
 - **Notifications** — a two-tone chirp on a new "waiting" event, then a single
   reminder beep every ~2 minutes while a session stays blocked. The NeoPixel
-  "eyes" blink amber for ~8 seconds on a new event, then hold a steady amber
-  while anything waits.
+  "eyes" encode *what* is wanted by their pattern and *how urgent* by colour:
+
+  | State | Eyes |
+  |---|---|
+  | Needs permission (blocks the session) | alternate red, left/right |
+  | Waiting for input (turn ended) | both blink amber together |
+  | All quiet | steady green |
+  | No link to the agent | steady blue |
+
+  Blinking lasts only ~8 seconds after a new event — a permanently blinking
+  badge is exhausting — after which the colour alone carries the state
+  (steady red / amber). Alternating reads differently from a synchronised
+  blink even in peripheral vision, so "answer me now" never looks like
+  "whenever you get to it".
 - **Do not disturb** — lay the badge flat on the desk (screen up) and it
   sleeps: screen and eyes off, alerts muted, with a confirmation chirp. Pick
   it up and it wakes. Worn on a lanyard it never triggers.

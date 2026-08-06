@@ -46,6 +46,7 @@ var (
 	btnRight = button{pin: machine.BUTTON_RIGHT}
 
 	ledOff   = color.RGBA{0, 0, 0, 255}
+	ledRed   = color.RGBA{50, 0, 0, 255}
 	ledGreen = color.RGBA{0, 18, 0, 255}
 	ledAmber = color.RGBA{45, 18, 0, 255}
 	ledBlue  = color.RGBA{0, 0, 12, 255}
@@ -176,33 +177,62 @@ func beepNudge() {
 	tone(0)
 }
 
-// ledsOff darkens both NeoPixels (used while the badge lies face-down).
-func ledsOff() {
-	ledColors[0] = ledOff
-	ledColors[1] = ledOff
+// setEyes writes both NeoPixels at once.
+func setEyes(left, right color.RGBA) {
+	ledColors[0] = left
+	ledColors[1] = right
 	leds.WriteColors(ledColors[:])
 }
 
-// updateLEDs reflects the current state on both NeoPixels (the gopher's
-// eyes). They blink only while `alerting` — the short window right after a
-// new event; otherwise waiting is shown as a steady dim amber.
-func updateLEDs(f frame, linked, alerting, blinkOn bool) {
-	c := ledGreen
+// ledsOff darkens both NeoPixels (used while the badge rests or in standby).
+func ledsOff() {
+	setEyes(ledOff, ledOff)
+}
 
-	switch {
-	case !linked:
-		c = ledBlue
-	case f.wait > 0 && alerting:
-		if blinkOn {
-			c = ledAmber
-		} else {
-			c = ledOff
-		}
-	case f.wait > 0:
-		c = ledAmber
+// updateLEDs reflects the current state on the gopher's eyes. The pattern
+// encodes *what* is wanted, the colour how urgent it is:
+//
+//	no link            steady blue
+//	all quiet          steady green
+//	waiting for input  both eyes blink amber together, then steady amber
+//	needs permission   eyes alternate red left/right, then steady red
+//
+// Alternating reads differently from a synchronised blink even in peripheral
+// vision, which is the point: a permission dialog blocks the session, plain
+// input can wait. Blinking only happens inside the short `alerting` window
+// after a new event — a permanently blinking badge is exhausting — after which
+// the colour alone carries the state.
+func updateLEDs(f frame, linked, alerting, blinkOn bool) {
+	if !linked {
+		setEyes(ledBlue, ledBlue)
+
+		return
 	}
 
-	ledColors[0] = c
-	ledColors[1] = c
-	leds.WriteColors(ledColors[:])
+	perm, input := waitingKinds(f)
+
+	switch {
+	case perm > 0:
+		if alerting {
+			if blinkOn {
+				setEyes(ledRed, ledOff)
+			} else {
+				setEyes(ledOff, ledRed)
+			}
+
+			return
+		}
+
+		setEyes(ledRed, ledRed)
+	case input > 0:
+		if alerting && !blinkOn {
+			ledsOff()
+
+			return
+		}
+
+		setEyes(ledAmber, ledAmber)
+	default:
+		setEyes(ledGreen, ledGreen)
+	}
 }

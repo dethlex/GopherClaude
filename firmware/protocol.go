@@ -144,6 +144,30 @@ func parseSessions(s string) []sessionRow {
 	return rows
 }
 
+// waitingKinds splits the waiting sessions by what they wait for: a permission
+// dialog (blocks the session until you answer) versus plain input (the turn
+// simply ended). The host sorts permission waits first and the row list is
+// capped at maxSessions, so a permission wait always makes it into the frame.
+//
+// Older/partial frames may carry no rows at all; a non-zero wait count then
+// falls back to "input", the less alarming of the two.
+func waitingKinds(f frame) (perm, input int) {
+	for _, s := range f.sessions {
+		switch s.phase {
+		case 'P':
+			perm++
+		case 'I':
+			input++
+		}
+	}
+
+	if perm == 0 && input == 0 && f.wait > 0 {
+		input = f.wait
+	}
+
+	return perm, input
+}
+
 // fmtTokens renders a token count in a compact human form: 999, 86.5k, 137M.
 func fmtTokens(v uint64) string {
 	const (
