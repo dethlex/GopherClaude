@@ -57,16 +57,16 @@ blocked chat — with light and sound.
   |---|---|
   | Needs permission (blocks the session) | alternate red, left/right — never stops |
   | New wait, first ~8s | both blink amber together |
-  | Claude is working | alternate dim cyan, left/right |
+  | Claude is working | steady dim cyan |
   | Someone is still waiting | steady amber |
   | All quiet (no live sessions) | steady green |
   | No link to the agent | steady blue |
 
-  Alternating reads differently from a synchronised blink even in peripheral
-  vision, so "something is happening" never looks like "you are needed". The
-  amber blink lasts only ~8 seconds — a permanently blinking badge is
-  exhausting — and after it, work-in-progress outranks a stale wait, so one
-  session parked in "waiting" for hours cannot mask every other state.
+  Only states that want something from you are allowed to move — a blinking
+  "I am busy" light is pure distraction, and the header spinner already shows
+  work in flight, so work gets a colour rather than motion. The amber blink
+  lasts only ~8 seconds, and after it work-in-progress outranks a stale wait,
+  so one session parked in "waiting" for hours cannot mask every other state.
 
   Run `make demo-eyes` to cycle all of these on the badge and compare them
   side by side (useful because a permission prompt never happens if you run

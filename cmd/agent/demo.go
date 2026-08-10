@@ -26,7 +26,7 @@ var demoScenes = []struct {
 		snapshot: domain.Snapshot{Chats: 0, Waiting: 0},
 	},
 	{
-		name: "WORKING: alternating cyan",
+		name: "WORKING: steady dim cyan",
 		snapshot: domain.Snapshot{
 			Chats: 2, Waiting: 0,
 			Message: "DEMO working",

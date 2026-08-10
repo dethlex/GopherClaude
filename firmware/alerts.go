@@ -195,12 +195,13 @@ func ledsOff() {
 //	no link             steady blue
 //	needs permission    eyes alternate red, left/right (never stops)
 //	new wait (~8s)      both eyes blink amber together
-//	Claude is working   eyes alternate dim cyan, left/right
+//	Claude is working   steady dim cyan
 //	someone waits       steady amber
 //	all quiet           steady green
 //
-// Alternating reads differently from a synchronised blink even in peripheral
-// vision, so "something is happening" never looks like "you are needed".
+// Only states that want something from you are allowed to move: a blinking
+// "I am busy" indicator is pure distraction, and the header spinner already
+// shows work in flight. So work gets a colour, not motion.
 //
 // The order matters more than the patterns: a fresh alert wins for its short
 // window, then work-in-progress outranks a stale wait — otherwise one session
@@ -226,7 +227,7 @@ func updateLEDs(f frame, linked, alerting, blinkOn bool) {
 			ledsOff()
 		}
 	case workingSessions(f) > 0:
-		alternate(ledCyan, blinkOn)
+		setEyes(ledCyan, ledCyan)
 	case input > 0:
 		setEyes(ledAmber, ledAmber)
 	default:
