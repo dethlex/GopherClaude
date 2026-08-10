@@ -7,8 +7,8 @@ AGENT_LABEL := com.claudecontrol.badge-agent
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT_LABEL).plist
 
 .DEFAULT_GOAL := help
-.PHONY: help firmware flash flash-monitor monitor agent run dry-run test vet \
-        install-hooks uninstall-hooks install-agent uninstall-agent \
+.PHONY: help firmware flash flash-monitor monitor agent run dry-run demo-eyes \
+        test vet install-hooks uninstall-hooks install-agent uninstall-agent \
         tinygo-update clean
 
 help: ## Show this help
@@ -48,6 +48,12 @@ run: agent ## Build and run the host agent in the foreground
 
 dry-run: agent ## Run the agent without the badge (frames printed to the log)
 	./$(AGENT_BIN) -dry-run -debug
+
+demo-eyes: agent ## Cycle synthetic states on the badge to compare eye patterns (Ctrl-C to stop)
+	-@launchctl bootout gui/$$(id -u)/$(AGENT_LABEL) 2>/dev/null || true
+	@echo "Watch the eyes. Ctrl-C when done; the service is restored on exit."
+	-./$(AGENT_BIN) -demo
+	-@[ -f $(AGENT_PLIST) ] && launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST) 2>/dev/null || true
 
 test: ## Run the agent unit tests
 	go test ./...

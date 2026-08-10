@@ -47,6 +47,7 @@ var (
 
 	ledOff   = color.RGBA{0, 0, 0, 255}
 	ledRed   = color.RGBA{50, 0, 0, 255}
+	ledCyan  = color.RGBA{0, 14, 20, 255}
 	ledGreen = color.RGBA{0, 18, 0, 255}
 	ledAmber = color.RGBA{45, 18, 0, 255}
 	ledBlue  = color.RGBA{0, 0, 12, 255}
@@ -189,19 +190,21 @@ func ledsOff() {
 	setEyes(ledOff, ledOff)
 }
 
-// updateLEDs reflects the current state on the gopher's eyes. The pattern
-// encodes *what* is wanted, the colour how urgent it is:
+// updateLEDs reflects the current state on the gopher's eyes:
 //
-//	no link            steady blue
-//	all quiet          steady green
-//	waiting for input  both eyes blink amber together, then steady amber
-//	needs permission   eyes alternate red left/right, then steady red
+//	no link             steady blue
+//	needs permission    eyes alternate red, left/right (never stops)
+//	new wait (~8s)      both eyes blink amber together
+//	Claude is working   eyes alternate dim cyan, left/right
+//	someone waits       steady amber
+//	all quiet           steady green
 //
 // Alternating reads differently from a synchronised blink even in peripheral
-// vision, which is the point: a permission dialog blocks the session, plain
-// input can wait. Blinking only happens inside the short `alerting` window
-// after a new event — a permanently blinking badge is exhausting — after which
-// the colour alone carries the state.
+// vision, so "something is happening" never looks like "you are needed".
+//
+// The order matters more than the patterns: a fresh alert wins for its short
+// window, then work-in-progress outranks a stale wait — otherwise one session
+// parked in "waiting" for hours would mask every other state forever.
 func updateLEDs(f frame, linked, alerting, blinkOn bool) {
 	if !linked {
 		setEyes(ledBlue, ledBlue)
@@ -213,26 +216,31 @@ func updateLEDs(f frame, linked, alerting, blinkOn bool) {
 
 	switch {
 	case perm > 0:
-		if alerting {
-			if blinkOn {
-				setEyes(ledRed, ledOff)
-			} else {
-				setEyes(ledOff, ledRed)
-			}
-
-			return
-		}
-
-		setEyes(ledRed, ledRed)
-	case input > 0:
-		if alerting && !blinkOn {
+		// A permission dialog blocks the session outright, so this one
+		// keeps alternating until it is answered or muted.
+		alternate(ledRed, blinkOn)
+	case alerting && input > 0:
+		if blinkOn {
+			setEyes(ledAmber, ledAmber)
+		} else {
 			ledsOff()
-
-			return
 		}
-
+	case workingSessions(f) > 0:
+		alternate(ledCyan, blinkOn)
+	case input > 0:
 		setEyes(ledAmber, ledAmber)
 	default:
 		setEyes(ledGreen, ledGreen)
 	}
+}
+
+// alternate lights one eye at a time, swapping sides every tick.
+func alternate(c color.RGBA, leftFirst bool) {
+	if leftFirst {
+		setEyes(c, ledOff)
+
+		return
+	}
+
+	setEyes(ledOff, c)
 }

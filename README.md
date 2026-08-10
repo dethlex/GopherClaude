@@ -55,16 +55,22 @@ blocked chat — with light and sound.
 
   | State | Eyes |
   |---|---|
-  | Needs permission (blocks the session) | alternate red, left/right |
-  | Waiting for input (turn ended) | both blink amber together |
-  | All quiet | steady green |
+  | Needs permission (blocks the session) | alternate red, left/right — never stops |
+  | New wait, first ~8s | both blink amber together |
+  | Claude is working | alternate dim cyan, left/right |
+  | Someone is still waiting | steady amber |
+  | All quiet (no live sessions) | steady green |
   | No link to the agent | steady blue |
 
-  Blinking lasts only ~8 seconds after a new event — a permanently blinking
-  badge is exhausting — after which the colour alone carries the state
-  (steady red / amber). Alternating reads differently from a synchronised
-  blink even in peripheral vision, so "answer me now" never looks like
-  "whenever you get to it".
+  Alternating reads differently from a synchronised blink even in peripheral
+  vision, so "something is happening" never looks like "you are needed". The
+  amber blink lasts only ~8 seconds — a permanently blinking badge is
+  exhausting — and after it, work-in-progress outranks a stale wait, so one
+  session parked in "waiting" for hours cannot mask every other state.
+
+  Run `make demo-eyes` to cycle all of these on the badge and compare them
+  side by side (useful because a permission prompt never happens if you run
+  Claude Code with `--dangerously-skip-permissions`).
 - **Do not disturb** — lay the badge flat on the desk (screen up) and it
   sleeps: screen and eyes off, alerts muted, with a confirmation chirp. Pick
   it up and it wakes. Worn on a lanyard it never triggers.
@@ -206,6 +212,7 @@ bump the `CC3` prefix on incompatible changes so a stale-firmware badge shows
 | `make monitor`         | Serial monitor (close before running the agent)    |
 | `make run`             | Build and run the host agent                       |
 | `make dry-run`         | Agent without the badge, frames to the log         |
+| `make demo-eyes`       | Cycle synthetic states to compare eye patterns      |
 | `make test` / `vet`    | Agent unit tests / static analysis                 |
 | `make install-hooks`   | Install Claude Code hooks                          |
 | `make uninstall-hooks` | Remove the hooks                                    |

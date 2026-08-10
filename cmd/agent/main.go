@@ -42,6 +42,7 @@ func run() error {
 		eventsFile   = flag.String("events", filepath.Join(home, ".claude-badge", "events.jsonl"), "hook events file")
 		dryRun       = flag.Bool("dry-run", false, "log frames instead of writing to the serial port")
 		debug        = flag.Bool("debug", false, "verbose logging")
+		demo         = flag.Bool("demo", false, "cycle synthetic states to compare the badge's eye patterns")
 	)
 
 	flag.Parse()
@@ -89,8 +90,23 @@ func run() error {
 	ticker := time.NewTicker(*intervalFlag)
 	defer ticker.Stop()
 
+	start := time.Now()
+	shownScene := -1
+
 	for {
-		snapshot := monitor.Snapshot(time.Now())
+		var snapshot domain.Snapshot
+
+		if *demo {
+			name, scene, idx := demoScene(time.Since(start))
+			snapshot = scene
+
+			if idx != shownScene {
+				shownScene = idx
+				logger.Info("demo scene", "module", "main", "scene", name)
+			}
+		} else {
+			snapshot = monitor.Snapshot(time.Now())
+		}
 
 		cmds, err := sink.Send(snapshot)
 		if err != nil {
