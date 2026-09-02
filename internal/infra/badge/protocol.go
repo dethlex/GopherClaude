@@ -12,18 +12,20 @@ import (
 
 // Wire format, one frame per line (firmware/protocol.go is the peer):
 //
-//	CC3|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>\n
+//	CC4|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>\n
 //
+// The first block is Claude Code, the trailing ag_* block is Antigravity.
 // Percentages are 0..100, or -1 when unavailable. Reset/ETA columns are
 // compact host-rendered durations ("3h", "45m", "2d") because the badge has
 // no clock. The ETA column is non-empty only when the 5-hour limit will run
 // out before its reset at the current burn rate.
 //
-// <sessions> lists up to 8 rows for the badge's session page:
+// <sessions> lists up to 8 rows for the badge's session page, both providers
+// merged:
 //
-//	name~phase~minutes~ctx_tokens(;next)*    phase: P | I | W
+//	name~phase~minutes~ctx_tokens~provider(;next)*   phase: P|I|W  provider: C|A
 const (
-	framePrefix = "CC3"
+	framePrefix = "CC4"
 	maxMsgLen   = 24
 	maxNameLen  = 14
 
@@ -82,7 +84,14 @@ func Encode(s domain.Snapshot, now time.Time) string {
 		"|" + strconv.FormatUint(s.Usage.Input, 10) +
 		"|" + strconv.FormatUint(s.Usage.Output, 10) +
 		"|" + sanitizeText(s.Message) +
-		"|" + encodeSessions(s.Sessions)
+		"|" + encodeSessions(s.Sessions) +
+		"|" + strconv.Itoa(s.Agy.Chats) +
+		"|" + strconv.Itoa(s.Agy.Waiting) +
+		"|" + strconv.Itoa(s.Agy.Plan.FiveHour.Pct) +
+		"|" + formatReset(s.Agy.Plan.FiveHour, now) +
+		"|" + strconv.Itoa(s.Agy.Plan.Weekly.Pct) +
+		"|" + formatReset(s.Agy.Plan.Weekly, now) +
+		"|" + strconv.Itoa(s.Agy.Prompts)
 }
 
 func encodeSessions(sessions []domain.SessionBrief) string {
@@ -100,6 +109,8 @@ func encodeSessions(sessions []domain.SessionBrief) string {
 		b.WriteString(strconv.Itoa(sess.Minutes))
 		b.WriteString(fieldSep)
 		b.WriteString(strconv.FormatUint(sess.CtxTokens, 10))
+		b.WriteString(fieldSep)
+		b.WriteByte(providerLetter(sess.Provider))
 	}
 
 	return b.String()
@@ -115,6 +126,17 @@ func phaseLetter(p domain.Phase) byte {
 		return 'W'
 	default:
 		return 'W'
+	}
+}
+
+func providerLetter(p domain.Provider) byte {
+	switch p {
+	case domain.ProviderAntigravity:
+		return 'A'
+	case domain.ProviderClaude:
+		return 'C'
+	default:
+		return 'C'
 	}
 }
 

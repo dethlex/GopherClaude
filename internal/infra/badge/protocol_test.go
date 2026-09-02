@@ -28,24 +28,38 @@ func TestEncode(t *testing.T) {
 		Message: "ClaudeControl PERM",
 		Sessions: []domain.SessionBrief{
 			{Name: "ClaudeControl", Phase: domain.PhaseWaitingPermission, Minutes: 5, CtxTokens: 412000},
-			{Name: "rotator", Phase: domain.PhaseWorking, Minutes: 0, CtxTokens: 73000},
+			{Provider: domain.ProviderAntigravity, Name: "rotator", Phase: domain.PhaseWorking, CtxTokens: 73000},
+		},
+		Agy: domain.ProviderStats{
+			Chats:   2,
+			Waiting: 1,
+			Plan: domain.PlanUsage{
+				FiveHour:   domain.Limit{Pct: 22, ResetsAt: now.Add(4*time.Hour + 41*time.Minute)},
+				Weekly:     domain.Limit{Pct: 18, ResetsAt: now.Add(6*24*time.Hour + 4*time.Hour)},
+				CreditsPct: domain.UnknownPct,
+			},
+			Prompts: 7,
 		},
 	}
 
 	got := Encode(snap, now)
-	want := "CC3|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
-		"|ClaudeControl~P~5~412000;rotator~W~0~73000"
+	want := "CC4|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
+		"|ClaudeControl~P~5~412000~C;rotator~W~0~73000~A" +
+		"|2|1|22|4h|18|6d|7"
 
 	if got != want {
-		t.Errorf("Encode() = %q, want %q", got, want)
+		t.Errorf("Encode() =\n%q\nwant\n%q", got, want)
 	}
 }
 
 func TestEncodeUnknownPlan(t *testing.T) {
-	snap := domain.Snapshot{Plan: domain.UnknownPlanUsage()}
+	snap := domain.Snapshot{
+		Plan: domain.UnknownPlanUsage(),
+		Agy:  domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
+	}
 
 	got := Encode(snap, time.Now())
-	want := "CC3|0|0|-1|||-1||-1||0|0||"
+	want := "CC4|0|0|-1|||-1||-1||0|0||" + "|0|0|-1||-1||0"
 
 	if got != want {
 		t.Errorf("Encode() = %q, want %q", got, want)
@@ -108,7 +122,7 @@ func TestEncodeSessionsSanitizesName(t *testing.T) {
 	}
 
 	got := encodeSessions(sessions)
-	want := "we/ird/name/he~I~0~0"
+	want := "we/ird/name/he~I~0~0~C"
 
 	if got != want {
 		t.Errorf("encodeSessions() = %q, want %q", got, want)

@@ -40,9 +40,14 @@ blocked chat — with light and sound.
 - **Burn-rate forecast** — the agent tracks how fast the 5-hour limit is
   filling; if you're on track to hit the cap *before* it resets, the badge
   shows a red `ETA 1.4h` instead of the reset time.
+- **Antigravity (Gemini) too** — D-pad ↑/↓ on the dashboard cycles three
+  views: `CLAUDE CONTROL`, `ANTIGRAVITY` (live `agy` chats, Gemini 5-hour and
+  weekly quota, prompts sent today) and `CLAUDE + AGY` (summed counts plus four
+  slim bars). Alerts, the banner and the eyes cover both providers.
 - **Session list page** — flip pages with the D-pad (left/right) to see every
-  session: project name, phase (`P` waiting for permission, `I` waiting for
-  input, `W` working), minutes in that phase, and context size (`412k`).
+  session across both providers: `C`/`A` column, project name, phase (`P`
+  waiting for permission, `I` waiting for input, `W` working), minutes in that
+  phase, and context size (`412k`).
 - **Jump to a chat** — move the cursor with the D-pad (up/down) and press
   **A**; the agent foregrounds that session's window on the Mac (terminal or
   Claude Desktop). On the dashboard, **A** jumps to the alerting session.
@@ -137,7 +142,7 @@ No badge handy? `make dry-run` prints the protocol frames to the log.
 | **Button A**              | Open a chat on the Mac (dashboard → alerting one; list → selected row) |
 | **Button B**              | Toggle all sound on/off (persisted to flash)                  |
 | **D-pad ← / →**           | Switch page (dashboard ↔ session list)                        |
-| **D-pad ↑ / ↓**           | Move the cursor on the session list                           |
+| **D-pad ↑ / ↓**           | Dashboard: switch view (Claude / Antigravity / both); list: move the cursor |
 | **Lay flat (screen up)**  | Do-not-disturb: sleep + mute                                  |
 
 ## How it works
@@ -147,6 +152,10 @@ No badge handy? `make dry-run` prints the protocol frames to the log.
 ~/.claude/projects/**/*.jsonl      usage: assistant records → message.usage
 ~/.claude-badge/events.jsonl       hook events (Stop, Notification, ...)
 api.anthropic.com/api/oauth/usage  plan limits (5h / weekly / credits)
+~/.gemini/antigravity-cli/presence/           live agy sessions (lock holders, lsof)
+~/.gemini/antigravity-cli/conversations/*.db  agy working heuristic (mtime)
+~/.gemini/antigravity-cli/history.jsonl       agy prompts sent today
+daily-cloudcode-pa.googleapis.com             Gemini quota (5h / weekly)
                  │
                  ▼
         agent (every 2s) ──USB CDC──▶ badge
@@ -170,24 +179,37 @@ api.anthropic.com/api/oauth/usage  plan limits (5h / weekly / credits)
   Keychain item `Claude Code-credentials` via the `security` CLI (Claude Code
   keeps it fresh). Polled every 60s; on failure the last known value is served,
   and `--` until the first success.
+- **Antigravity** sessions are the `agy` processes holding a lock file in
+  `~/.gemini/antigravity-cli/presence/` (found with `lsof`; the project name
+  comes from the process's working directory). Their phase comes from agy hooks
+  (`Stop`, `Idle`, `Notification`, `PostToolUse`) or, without hooks, from the
+  conversation database's mtime — it is written while the model works. Gemini
+  quota comes from the Code Assist API (`retrieveUserQuotaSummary`) using agy's
+  own OAuth token; when that token has expired (idle agy does not refresh it)
+  the agent refreshes it in memory with agy's client credentials and never
+  writes it back. Everything Antigravity-related is optional: without
+  `~/.gemini/antigravity-cli` the views simply show no data.
 
-`make install-hooks` edits `~/.claude/settings.json` idempotently and keeps a
-backup next to it (`settings.json.bak-badge-*`); undo with
-`make uninstall-hooks`. Hooks only take effect for sessions started afterwards.
+`make install-hooks` edits `~/.claude/settings.json` (and
+`~/.gemini/config/hooks.json` when Antigravity is installed) idempotently and
+keeps a backup next to each (`*.bak-badge-*`); undo with `make uninstall-hooks`.
+Hooks only take effect for sessions started afterwards.
 
 ## Wire protocol (host → badge)
 
 One line per frame, fields separated by `|`:
 
 ```
-CC3|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>\n
+CC4|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>\n
 ```
 
+The first 13 fields describe Claude Code, the trailing 7 Antigravity; the badge
+sums the two for the combined view, alerts and the `CHATS`/`WAIT` echo.
 Percentages are `0..100`, or `-1` when unknown. Reset and ETA columns are
 host-formatted durations (`3h`, `45m`, `2d`) because the badge has no clock.
-`<sessions>` is up to 8 rows of `name~phase~minutes~ctx` joined by `;` (phase
-is `P` / `I` / `W`). Text fields are printable ASCII only — the badge fonts
-are 7-bit.
+`<sessions>` is up to 8 rows of `name~phase~minutes~ctx~provider` joined by
+`;` (phase is `P` / `I` / `W`, provider `C` / `A`), waits first across both
+providers. Text fields are printable ASCII only — the badge fonts are 7-bit.
 
 The badge echoes `ok chats=N wait=M` per frame (logged at debug level); if no
 frame arrives for 10 seconds it shows `NO LINK`.
@@ -199,7 +221,7 @@ works from the background service.
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and
-bump the `CC3` prefix on incompatible changes so a stale-firmware badge shows
+bump the `CC4` prefix on incompatible changes so a stale-firmware badge shows
 `NO LINK` instead of garbage.
 
 ## Make targets
@@ -214,7 +236,7 @@ bump the `CC3` prefix on incompatible changes so a stale-firmware badge shows
 | `make dry-run`         | Agent without the badge, frames to the log         |
 | `make demo-eyes`       | Cycle synthetic states to compare eye patterns      |
 | `make test` / `vet`    | Agent unit tests / static analysis                 |
-| `make install-hooks`   | Install Claude Code hooks                          |
+| `make install-hooks`   | Install Claude Code (and Antigravity) hooks        |
 | `make uninstall-hooks` | Remove the hooks                                    |
 | `make install-agent`   | Agent as a launchd service (autostart at login)    |
 | `make uninstall-agent` | Stop and remove the service                        |
@@ -222,7 +244,7 @@ bump the `CC3` prefix on incompatible changes so a stale-firmware badge shows
 | `make clean`           | Remove `build/` and `bin/`                         |
 
 Agent flags: `-port /dev/cu.usbmodemXXX` (default `auto`), `-interval 2s`,
-`-dry-run`, `-debug`, `-claude-dir`, `-events`.
+`-dry-run`, `-debug`, `-claude-dir`, `-agy-dir`, `-events`.
 
 ## Troubleshooting
 
@@ -248,6 +270,12 @@ Agent flags: `-port /dev/cu.usbmodemXXX` (default `auto`), `-interval 2s`,
   a permission dialog is indistinguishable from a running tool.
 - **Badge stuck on `NO LINK`.** Unplug and replug it; the watchdog also
   self-resets a hung badge within a few seconds.
+- **`ANTIGRAVITY` view shows `--` for the quota.** The agent needs agy's OAuth
+  token (`~/.gemini/antigravity-cli/antigravity-oauth-token`); run any `agy`
+  command once to log in. Check `~/.claude-badge/agent.log` for `agy-quota`.
+- **`tinygo: requires go version 1.19 through 1.26`.** TinyGo lags Go
+  releases; the Makefile pins `GOTOOLCHAIN=go1.26.0` for every tinygo command
+  (downloaded once by the `go` tool), so build through `make`.
 
 ## License
 

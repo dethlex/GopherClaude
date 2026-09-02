@@ -34,11 +34,11 @@ const workingEventTTL = 30 * time.Second
 // tail heuristic.
 type Resolver struct {
 	events      *EventLog
-	transcripts *TranscriptDir
+	transcripts Inspector
 	logger      *slog.Logger
 }
 
-func NewResolver(events *EventLog, transcripts *TranscriptDir, logger *slog.Logger) *Resolver {
+func NewResolver(events *EventLog, transcripts Inspector, logger *slog.Logger) *Resolver {
 	return &Resolver{
 		events:      events,
 		transcripts: transcripts,
@@ -115,4 +115,10 @@ func reasonFor(phase domain.Phase) string {
 	default:
 		return ""
 	}
+}
+
+// Inspector is the per-provider fallback phase heuristic (transcript tail for
+// Claude Code, conversation-db mtime for Antigravity) and context estimate.
+type Inspector interface {
+	Inspect(session domain.Session) (domain.Phase, uint64, error)
 }

@@ -4,13 +4,23 @@ package domain
 
 import "time"
 
-// Phase describes what a Claude Code session is doing right now.
+// Provider is the coding assistant a session belongs to.
+type Provider int
+
+const (
+	// ProviderClaude — Claude Code (cli or Claude Desktop).
+	ProviderClaude Provider = iota
+	// ProviderAntigravity — Antigravity CLI (agy, Gemini-backed).
+	ProviderAntigravity
+)
+
+// Phase describes what a session is doing right now.
 type Phase int
 
 const (
 	// PhaseWorking — the model is generating or a tool is running.
 	PhaseWorking Phase = iota
-	// PhaseWaitingInput — the turn ended, Claude waits for the user's prompt.
+	// PhaseWaitingInput — the turn ended, the assistant waits for a prompt.
 	PhaseWaitingInput
 	// PhaseWaitingPermission — a permission dialog is open.
 	PhaseWaitingPermission
@@ -22,12 +32,14 @@ func (p Phase) Waiting() bool {
 }
 
 type (
-	// Session is one live interactive Claude Code session on this machine.
+	// Session is one live interactive assistant session on this machine.
 	Session struct {
+		Provider  Provider
 		ID        string
 		PID       int
 		Dir       string
 		Status    string
+		Model     string // as launched, e.g. "gemini-3.7-flash-high"; may be empty
 		StartedAt time.Time
 	}
 
@@ -44,6 +56,7 @@ type (
 
 	// SessionBrief is one row of the badge's session list page.
 	SessionBrief struct {
+		Provider  Provider
 		Name      string
 		Phase     Phase
 		Minutes   int // time spent in the current phase, 0 when unknown
@@ -64,7 +77,7 @@ type (
 		ResetsAt time.Time
 	}
 
-	// PlanUsage mirrors the "Plan usage" panel of Claude Desktop.
+	// PlanUsage mirrors a provider's "plan usage" panel.
 	PlanUsage struct {
 		FiveHour    Limit
 		Weekly      Limit
@@ -77,6 +90,15 @@ type (
 		FiveHourETA time.Duration
 	}
 
+	// ProviderStats is the per-provider block of the snapshot for providers
+	// other than the primary (Claude) one.
+	ProviderStats struct {
+		Chats   int
+		Waiting int
+		Plan    PlanUsage
+		Prompts int // prompts sent today
+	}
+
 	// FocusTarget identifies the session a "jump to chat" button should
 	// bring to the foreground on the host.
 	FocusTarget struct {
@@ -84,7 +106,9 @@ type (
 		Dir string
 	}
 
-	// Snapshot is what the badge ultimately renders.
+	// Snapshot is what the badge ultimately renders. Chats/Waiting/Usage/Plan
+	// describe Claude Code; Agy carries the Antigravity block; Sessions and
+	// FocusTargets are merged across providers.
 	Snapshot struct {
 		Chats    int
 		Waiting  int
@@ -98,6 +122,7 @@ type (
 		// FocusTargets is one target per Sessions row, in the same order,
 		// so the badge can ask to open a specific list row by index.
 		FocusTargets []FocusTarget
+		Agy          ProviderStats
 	}
 
 	// Command is a button action the badge sends back to the host.
@@ -143,6 +168,11 @@ type (
 	// UnknownPlanUsage instead of failing the snapshot.
 	PlanSource interface {
 		Plan(now time.Time) PlanUsage
+	}
+
+	// PromptSource counts prompts the user sent today.
+	PromptSource interface {
+		PromptsToday(now time.Time) int
 	}
 
 	// PhaseResolver determines what each session is doing.

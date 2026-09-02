@@ -20,6 +20,7 @@ const (
 	hookPostToolUse      = "PostToolUse"
 	hookSessionStart     = "SessionStart"
 	hookSessionEnd       = "SessionEnd"
+	hookIdle             = "Idle" // agy: waiting for input
 
 	notifyPermission = "permission_prompt"
 	notifyIdle       = "idle_prompt"
@@ -47,7 +48,7 @@ func (e Event) Phase() (domain.Phase, bool) {
 		default:
 			return domain.PhaseWorking, false
 		}
-	case hookStop:
+	case hookStop, hookIdle:
 		return domain.PhaseWaitingInput, true
 	case hookUserPromptSubmit, hookPostToolUse, hookSessionStart:
 		return domain.PhaseWorking, true

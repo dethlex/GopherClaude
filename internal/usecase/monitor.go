@@ -18,48 +18,116 @@ const (
 	maxPhaseMinutes = 999
 )
 
-// Monitor builds a Snapshot of all live Claude Code sessions.
-type Monitor struct {
-	sessions domain.SessionSource
-	usage    domain.UsageSource
-	plan     domain.PlanSource
-	phases   domain.PhaseResolver
-	logger   *slog.Logger
+// ProviderSources are the feeds for one assistant. Plan and Prompts may be nil.
+type ProviderSources struct {
+	Sessions domain.SessionSource
+	Phases   domain.PhaseResolver
+	Plan     domain.PlanSource
+	Prompts  domain.PromptSource
 }
 
-func NewMonitor(
-	sessions domain.SessionSource,
-	usage domain.UsageSource,
-	plan domain.PlanSource,
-	phases domain.PhaseResolver,
-	logger *slog.Logger,
-) *Monitor {
-	return &Monitor{
-		sessions: sessions,
-		usage:    usage,
-		plan:     plan,
-		phases:   phases,
-		logger:   logger.With("module", "monitor"),
-	}
+// Sources wires the monitor. Claude is mandatory; Agy is optional (nil when
+// Antigravity is not installed).
+type Sources struct {
+	Claude ProviderSources
+	Usage  domain.UsageSource
+	Agy    *ProviderSources
+}
+
+// Monitor builds a Snapshot of all live assistant sessions.
+type Monitor struct {
+	src    Sources
+	logger *slog.Logger
+}
+
+func NewMonitor(src Sources, logger *slog.Logger) *Monitor {
+	return &Monitor{src: src, logger: logger.With("module", "monitor")}
 }
 
 // Snapshot collects the current state. Source failures degrade the snapshot
 // (zero values) instead of aborting it: a half-filled badge beats a dead one.
 func (m *Monitor) Snapshot(now time.Time) domain.Snapshot {
-	sessions, err := m.sessions.Sessions()
-	if err != nil {
-		m.logger.Error("list sessions", "error", err)
-	}
+	claude := m.collect(m.src.Claude, now)
 
-	usage, err := m.usage.TodayUsage(now)
+	usage, err := m.src.Usage.TodayUsage(now)
 	if err != nil {
 		m.logger.Error("aggregate usage", "error", err)
 	}
 
-	states := m.phases.ResolveAll(sessions, now)
+	snap := domain.Snapshot{
+		Chats:   len(claude.states),
+		Waiting: claude.waiting,
+		Usage:   usage,
+		Plan:    planOf(m.src.Claude.Plan, now),
+		Agy:     domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
+	}
+
+	all := claude.states
+
+	if m.src.Agy != nil {
+		agy := m.collect(*m.src.Agy, now)
+		all = append(all, agy.states...)
+
+		snap.Agy = domain.ProviderStats{
+			Chats:   len(agy.states),
+			Waiting: agy.waiting,
+			Plan:    planOf(m.src.Agy.Plan, now),
+			Prompts: promptsOf(m.src.Agy.Prompts, now),
+		}
+	}
+
+	if newest := newestWaiting(all); newest != nil {
+		snap.Message = filepath.Base(newest.Session.Dir) + " " + newest.Reason
+		snap.Focus = &domain.FocusTarget{PID: newest.Session.PID, Dir: newest.Session.Dir}
+	}
+
+	snap.Sessions, snap.FocusTargets = sessionList(all, now)
+
+	return snap
+}
+
+type collected struct {
+	states  []domain.SessionState
+	waiting int
+}
+
+func (m *Monitor) collect(src ProviderSources, now time.Time) collected {
+	sessions, err := src.Sessions.Sessions()
+	if err != nil {
+		m.logger.Error("list sessions", "error", err)
+	}
+
+	states := src.Phases.ResolveAll(sessions, now)
 
 	waiting := 0
 
+	for i := range states {
+		if states[i].Phase.Waiting() {
+			waiting++
+		}
+	}
+
+	return collected{states: states, waiting: waiting}
+}
+
+func planOf(src domain.PlanSource, now time.Time) domain.PlanUsage {
+	if src == nil {
+		return domain.UnknownPlanUsage()
+	}
+
+	return src.Plan(now)
+}
+
+func promptsOf(src domain.PromptSource, now time.Time) int {
+	if src == nil {
+		return 0
+	}
+
+	return src.PromptsToday(now)
+}
+
+// newestWaiting is the banner session: the most recent wait across providers.
+func newestWaiting(states []domain.SessionState) *domain.SessionState {
 	var newest *domain.SessionState
 
 	for i := range states {
@@ -67,37 +135,12 @@ func (m *Monitor) Snapshot(now time.Time) domain.Snapshot {
 			continue
 		}
 
-		waiting++
-
 		if newest == nil || states[i].Since.After(newest.Since) {
 			newest = &states[i]
 		}
 	}
 
-	msg := ""
-
-	var focus *domain.FocusTarget
-
-	if newest != nil {
-		msg = filepath.Base(newest.Session.Dir) + " " + newest.Reason
-		focus = &domain.FocusTarget{
-			PID: newest.Session.PID,
-			Dir: newest.Session.Dir,
-		}
-	}
-
-	briefs, targets := sessionList(states, now)
-
-	return domain.Snapshot{
-		Chats:        len(sessions),
-		Waiting:      waiting,
-		Usage:        usage,
-		Plan:         m.plan.Plan(now),
-		Message:      msg,
-		Sessions:     briefs,
-		Focus:        focus,
-		FocusTargets: targets,
-	}
+	return newest
 }
 
 // sessionList builds the badge's session page: permission waits first, then
@@ -125,6 +168,7 @@ func sessionList(states []domain.SessionState, now time.Time) ([]domain.SessionB
 
 	for _, st := range ordered {
 		briefs = append(briefs, domain.SessionBrief{
+			Provider:  st.Session.Provider,
 			Name:      filepath.Base(st.Session.Dir),
 			Phase:     st.Phase,
 			Minutes:   phaseMinutes(st.Since, now),

@@ -8,21 +8,25 @@ import (
 
 // Host -> badge wire format, one frame per line:
 //
-//	CC3|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>\n
+//	CC4|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>\n
 //
-// Percentages are 0..100, or -1 when the host could not obtain the value.
-// <sessions> = name~phase~minutes~ctx_tokens entries joined by ';',
-// phase is one of P (permission), I (input), W (working).
+// The first block is Claude Code, the ag_* block is Antigravity. Percentages
+// are 0..100, or -1 when the host could not obtain the value.
+// <sessions> = name~phase~minutes~ctx_tokens~provider entries joined by ';',
+// phase is one of P (permission), I (input), W (working); provider C or A.
 const (
-	framePrefix = "CC3"
-	frameFields = 14
+	framePrefix = "CC4"
+	frameFields = 21
 
 	pctUnknown = -1
 
 	maxSessions      = 8
 	sessionSep       = ";"
 	sessionFieldSep  = "~"
-	sessionFieldsNum = 4
+	sessionFieldsNum = 5
+
+	provClaude = 'C'
+	provAgy    = 'A'
 )
 
 type sessionRow struct {
@@ -30,6 +34,17 @@ type sessionRow struct {
 	phase byte
 	mins  int
 	ctx   uint64
+	prov  byte
+}
+
+// providerStats is one assistant's block of the frame.
+type providerStats struct {
+	chats   int
+	wait    int
+	fivePct int
+	fiveRst string
+	weekPct int
+	weekRst string
 }
 
 type frame struct {
@@ -46,9 +61,17 @@ type frame struct {
 	tokOut   uint64
 	msg      string
 	sessions []sessionRow
+
+	agy        providerStats
+	agyPrompts int
 }
 
 var errBadFrame = errors.New("bad frame")
+
+// totalChats / totalWait span both providers — alerts, eyes and the spinner
+// do not care who is waiting.
+func (f frame) totalChats() int { return f.chats + f.agy.chats }
+func (f frame) totalWait() int  { return f.wait + f.agy.wait }
 
 func parseFrame(line string) (frame, error) {
 	parts := strings.SplitN(line, "|", frameFields)
@@ -56,37 +79,22 @@ func parseFrame(line string) (frame, error) {
 		return frame{}, errBadFrame
 	}
 
-	var (
-		f   frame
-		err error
-	)
+	ints := map[int]*int{}
+	var f frame
 
-	if f.chats, err = strconv.Atoi(parts[1]); err != nil {
-		return frame{}, errBadFrame
+	ints[1], ints[2], ints[3], ints[6], ints[8] = &f.chats, &f.wait, &f.fivePct, &f.weekPct, &f.credPct
+	ints[14], ints[15], ints[16], ints[18], ints[20] = &f.agy.chats, &f.agy.wait, &f.agy.fivePct, &f.agy.weekPct, &f.agyPrompts
+
+	for idx, dst := range ints {
+		v, err := strconv.Atoi(parts[idx])
+		if err != nil {
+			return frame{}, errBadFrame
+		}
+
+		*dst = v
 	}
 
-	if f.wait, err = strconv.Atoi(parts[2]); err != nil {
-		return frame{}, errBadFrame
-	}
-
-	if f.fivePct, err = strconv.Atoi(parts[3]); err != nil {
-		return frame{}, errBadFrame
-	}
-
-	f.fiveRst = parts[4]
-	f.fiveEta = parts[5]
-
-	if f.weekPct, err = strconv.Atoi(parts[6]); err != nil {
-		return frame{}, errBadFrame
-	}
-
-	f.weekRst = parts[7]
-
-	if f.credPct, err = strconv.Atoi(parts[8]); err != nil {
-		return frame{}, errBadFrame
-	}
-
-	f.credTxt = parts[9]
+	var err error
 
 	if f.tokIn, err = strconv.ParseUint(parts[10], 10, 64); err != nil {
 		return frame{}, errBadFrame
@@ -96,8 +104,14 @@ func parseFrame(line string) (frame, error) {
 		return frame{}, errBadFrame
 	}
 
+	f.fiveRst = parts[4]
+	f.fiveEta = parts[5]
+	f.weekRst = parts[7]
+	f.credTxt = parts[9]
 	f.msg = parts[12]
 	f.sessions = parseSessions(parts[13])
+	f.agy.fiveRst = parts[17]
+	f.agy.weekRst = parts[19]
 
 	return f, nil
 }
@@ -119,7 +133,7 @@ func parseSessions(s string) []sessionRow {
 		}
 
 		fields := strings.Split(entry, sessionFieldSep)
-		if len(fields) != sessionFieldsNum || fields[0] == "" || len(fields[1]) != 1 {
+		if len(fields) != sessionFieldsNum || fields[0] == "" || len(fields[1]) != 1 || len(fields[4]) != 1 {
 			continue
 		}
 
@@ -138,16 +152,18 @@ func parseSessions(s string) []sessionRow {
 			phase: fields[1][0],
 			mins:  mins,
 			ctx:   ctx,
+			prov:  fields[4][0],
 		})
 	}
 
 	return rows
 }
 
-// waitingKinds splits the waiting sessions by what they wait for: a permission
-// dialog (blocks the session until you answer) versus plain input (the turn
-// simply ended). The host sorts permission waits first and the row list is
-// capped at maxSessions, so a permission wait always makes it into the frame.
+// waitingKinds splits the waiting sessions (both providers) by what they wait
+// for: a permission dialog (blocks the session until you answer) versus plain
+// input (the turn simply ended). The host sorts permission waits first and the
+// row list is capped at maxSessions, so a permission wait always makes it into
+// the frame.
 //
 // Older/partial frames may carry no rows at all; a non-zero wait count then
 // falls back to "input", the less alarming of the two.
@@ -161,8 +177,8 @@ func waitingKinds(f frame) (perm, input int) {
 		}
 	}
 
-	if perm == 0 && input == 0 && f.wait > 0 {
-		input = f.wait
+	if perm == 0 && input == 0 && f.totalWait() > 0 {
+		input = f.totalWait()
 	}
 
 	return perm, input

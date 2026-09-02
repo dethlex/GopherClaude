@@ -1,8 +1,8 @@
 // ClaudeControl firmware for the Gopher Badge (tinygo, target gopher-badge).
 //
-// The badge renders the state of Claude Code running on the host: today's
-// token usage, the number of active chats and an alert banner when a session
-// waits for the user. Data arrives over USB CDC serial from the companion
+// The badge renders the state of Claude Code and Antigravity running on the
+// host: plan limits, the number of active chats and an alert banner when a
+// session waits for the user. Data arrives over USB CDC serial from the companion
 // host agent (cmd/agent in this repository); the badge itself has no network.
 package main
 
@@ -111,8 +111,8 @@ func main() {
 			if err != nil {
 				println("err: bad frame")
 			} else {
-				newAlert := f.wait > 0 && (!linked || state.wait == 0 || f.msg != state.msg)
-				if f.wait == 0 || f.msg != state.msg {
+				newAlert := f.totalWait() > 0 && (!linked || state.totalWait() == 0 || f.msg != state.msg)
+				if f.totalWait() == 0 || f.msg != state.msg {
 					// A new event unmutes — unless the badge
 					// deliberately rests on the desk.
 					muted = isResting
@@ -120,8 +120,9 @@ func main() {
 
 				// Session minutes tick every minute and must not
 				// keep the badge awake; only real work counts.
-				dataChanged := !linked || f.chats != state.chats || f.wait != state.wait ||
-					f.tokIn != state.tokIn || f.tokOut != state.tokOut || f.msg != state.msg
+				dataChanged := !linked || f.totalChats() != state.totalChats() || f.totalWait() != state.totalWait() ||
+					f.tokIn != state.tokIn || f.tokOut != state.tokOut || f.msg != state.msg ||
+					f.agyPrompts != state.agyPrompts
 
 				state = f
 				linked = true
@@ -143,7 +144,7 @@ func main() {
 					updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
 				}
 
-				println("ok chats=" + strconv.Itoa(f.chats) + " wait=" + strconv.Itoa(f.wait))
+				println("ok chats=" + strconv.Itoa(f.totalChats()) + " wait=" + strconv.Itoa(f.totalWait()))
 			}
 		}
 
@@ -167,17 +168,21 @@ func main() {
 			switch {
 			case activePage == pageSessions && visibleSessionRows(state) > 0:
 				sendCommand("focus " + strconv.Itoa(selRow))
-			case activePage == pageDashboard && state.wait > 0:
+			case activePage == pageDashboard && state.totalWait() > 0:
 				sendCommand("focus")
 			}
 		}
 
+		// Up/down: move the cursor on the session list, switch the
+		// dashboard view (CLAUDE / ANTIGRAVITY / ALL) otherwise.
 		if btnUp.pressed() {
 			touch(now)
 
 			if activePage == pageSessions {
 				moveSelection(state, -1)
 				render(state, linked)
+			} else {
+				switchView(state, linked, -1)
 			}
 		}
 
@@ -187,6 +192,8 @@ func main() {
 			if activePage == pageSessions {
 				moveSelection(state, 1)
 				render(state, linked)
+			} else {
+				switchView(state, linked, 1)
 			}
 		}
 
@@ -213,7 +220,7 @@ func main() {
 		// Re-nudge: remind about a still-waiting session. Audio only —
 		// it nags even from standby (the whole point), but rest/mute/
 		// sound-off silence it.
-		if linked && state.wait > 0 && !muted && !soundOff && !isResting &&
+		if linked && state.totalWait() > 0 && !muted && !soundOff && !isResting &&
 			now.Sub(lastNudge) >= renudgeInterval {
 			beepNudge()
 			lastNudge = now

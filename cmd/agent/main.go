@@ -1,5 +1,5 @@
-// Command agent watches Claude Code activity on this machine and streams it
-// to the ClaudeControl firmware on a Gopher Badge over USB serial.
+// Command agent watches Claude Code and Antigravity activity on this machine
+// and streams it to the GopherClaude firmware on a Gopher Badge over USB serial.
 package main
 
 import (
@@ -7,20 +7,30 @@ import (
 	"flag"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/agyfs"
 	"github.com/dethlex/GopherClaude/internal/infra/anthropic"
 	"github.com/dethlex/GopherClaude/internal/infra/badge"
 	"github.com/dethlex/GopherClaude/internal/infra/claudefs"
+	"github.com/dethlex/GopherClaude/internal/infra/google"
 	"github.com/dethlex/GopherClaude/internal/infra/host"
 	"github.com/dethlex/GopherClaude/internal/usecase"
 )
 
-const defaultInterval = 2 * time.Second
+const (
+	defaultInterval = 2 * time.Second
+	agyBinaryName   = "agy"
+)
+
+// agyInstallDirs are where agy usually ends up ($HOME is expanded).
+var agyInstallDirs = []string{"$HOME/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "$HOME/bin", "$HOME/go/bin"}
 
 func main() {
 	if err := run(); err != nil {
@@ -39,6 +49,7 @@ func run() error {
 		portFlag     = flag.String("port", "auto", "serial port path, or 'auto' to glob /dev/cu.usbmodem*")
 		intervalFlag = flag.Duration("interval", defaultInterval, "how often to send a frame")
 		claudeDir    = flag.String("claude-dir", filepath.Join(home, ".claude"), "Claude Code data directory")
+		agyDir       = flag.String("agy-dir", filepath.Join(home, ".gemini", "antigravity-cli"), "Antigravity CLI data directory")
 		eventsFile   = flag.String("events", filepath.Join(home, ".claude-badge", "events.jsonl"), "hook events file")
 		dryRun       = flag.Bool("dry-run", false, "log frames instead of writing to the serial port")
 		debug        = flag.Bool("debug", false, "verbose logging")
@@ -54,15 +65,20 @@ func run() error {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	sessions := claudefs.NewSessionRegistry(filepath.Join(*claudeDir, "sessions"), logger)
-	usage := claudefs.NewUsageCollector(filepath.Join(*claudeDir, "projects"), time.Local, logger)
-	resolver := claudefs.NewResolver(
-		claudefs.NewEventLog(*eventsFile),
-		claudefs.NewTranscriptDir(filepath.Join(*claudeDir, "projects")),
-		logger,
-	)
-	plan := anthropic.NewPlanFetcher(logger)
-	monitor := usecase.NewMonitor(sessions, usage, plan, resolver, logger)
+	events := claudefs.NewEventLog(*eventsFile)
+
+	sources := usecase.Sources{
+		Claude: usecase.ProviderSources{
+			Sessions: claudefs.NewSessionRegistry(filepath.Join(*claudeDir, "sessions"), logger),
+			Phases: claudefs.NewResolver(events,
+				claudefs.NewTranscriptDir(filepath.Join(*claudeDir, "projects")), logger),
+			Plan: anthropic.NewPlanFetcher(logger),
+		},
+		Usage: claudefs.NewUsageCollector(filepath.Join(*claudeDir, "projects"), time.Local, logger),
+		Agy:   agySources(*agyDir, events, logger),
+	}
+
+	monitor := usecase.NewMonitor(sources, logger)
 
 	var sink domain.Sink = badge.NewSerialSink(*portFlag, logger)
 	if *dryRun {
@@ -85,6 +101,7 @@ func run() error {
 		"interval", intervalFlag.String(),
 		"port", *portFlag,
 		"dry_run", *dryRun,
+		"antigravity", sources.Agy != nil,
 	)
 
 	ticker := time.NewTicker(*intervalFlag)
@@ -116,6 +133,8 @@ func run() error {
 				"module", "main",
 				"chats", snapshot.Chats,
 				"waiting", snapshot.Waiting,
+				"agy_chats", snapshot.Agy.Chats,
+				"agy_waiting", snapshot.Agy.Waiting,
 				"msg", snapshot.Message,
 			)
 
@@ -130,6 +149,57 @@ func run() error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// agySources wires the Antigravity feeds, or returns nil when agy is not
+// installed on this machine (its data directory is absent).
+func agySources(dir string, events *claudefs.EventLog, logger *slog.Logger) *usecase.ProviderSources {
+	if _, err := os.Stat(dir); err != nil {
+		logger.Info("antigravity not detected, skipping", "module", "main", "dir", dir)
+
+		return nil
+	}
+
+	agyBinary := findAgyBinary()
+	if agyBinary == "" {
+		logger.Warn("agy binary not found; set "+google.EnvClientID+"/"+google.EnvClientSecret+" for the Gemini quota", "module", "main")
+	}
+
+	return &usecase.ProviderSources{
+		Sessions: agyfs.NewSessionRegistry(filepath.Join(dir, "presence"), logger),
+		Phases:   claudefs.NewResolver(events, agyfs.NewConversationDir(filepath.Join(dir, "conversations")), logger),
+		Plan:     google.NewQuotaFetcher(filepath.Join(dir, "antigravity-oauth-token"), agyBinary, logger),
+		Prompts:  agyfs.NewHistory(filepath.Join(dir, "history.jsonl"), time.Local, logger),
+	}
+}
+
+// findAgyBinary locates the agy executable, whose embedded OAuth client
+// credentials the quota fetcher needs. PATH first, then the usual install
+// spots: launchd runs the service with a bare PATH that has none of them.
+func findAgyBinary() string {
+	candidates := make([]string, 0, len(agyInstallDirs)+1)
+
+	if path, err := exec.LookPath(agyBinaryName); err == nil {
+		candidates = append(candidates, path)
+	}
+
+	home, _ := os.UserHomeDir()
+	for _, dir := range agyInstallDirs {
+		candidates = append(candidates, filepath.Join(strings.ReplaceAll(dir, "$HOME", home), agyBinaryName))
+	}
+
+	for _, path := range candidates {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			continue
+		}
+
+		if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
+			return resolved
+		}
+	}
+
+	return ""
 }
 
 // handleCommands acts on button presses the badge sent back.

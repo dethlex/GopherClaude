@@ -10,20 +10,23 @@ import (
 	"tinygo.org/x/tinyfont/freemono"
 )
 
-// Two pages, toggled with button B (or D-pad left/right):
+// Two pages (D-pad left/right); the dashboard has three views (D-pad up/down):
 //
-// Dashboard:                          Sessions:
+// CLAUDE view:                         ANTIGRAVITY view:
 //
-//	CLAUDE CONTROL            [#]      CLAUDE CONTROL    SESSIONS [#]
-//	CHATS 4           WAIT 2           ClaudeControl  P   5m  412k
-//	5-HOUR              44% 3h         rotator        I  12m   73k
-//	[##########............]           paperos        W    -  118k
-//	WEEKLY              17% 2d         ...up to 7 rows...
-//	[#####.................]
-//	CREDITS           32.66/50
+//	CLAUDE CONTROL           ◐ [#] ●    ANTIGRAVITY              ◐ [#] ●
+//	CHATS 4           WAIT 2            CHATS 6           WAIT 3
+//	5-HOUR              44% 3h          5-HOUR              22% 4h
+//	[##########............]            [#####.................]
+//	WEEKLY              17% 2d          WEEKLY              18% 6d
+//	[#####.................]            [####..................]
+//	CREDITS           32.66/50          PROMPTS                 7
 //	[###############.......]
 //	IN 156.4k  OUT 783.5k
-//	========== BANNER ==========       ========== BANNER ==========
+//	========== BANNER ==========        ========== BANNER ==========
+//
+// ALL view: summed CHATS/WAIT and four thin bars (C 5H, C WK, G 5H, G WK).
+// Sessions page: one row per session across providers, "C"/"A" column first.
 const (
 	screenW = 320
 	screenH = 240
@@ -65,12 +68,10 @@ const (
 	rowLabelH = 18
 	labelColW = 90
 
-	fiveLabelBase = 80
-	fiveBarY      = 86
-	weekLabelBase = 114
-	weekBarY      = 120
-	credLabelBase = 148
-	credBarY      = 154
+	// Bar rows: three tall rows for a single provider, four tighter rows
+	// for the combined view. Bars sit 6px under their label baseline.
+	barsTop   = 60
+	barOffset = 6
 
 	usageBaseline = 186
 	usageTop      = 168
@@ -88,11 +89,18 @@ const (
 	sessRowBase   = 48
 	sessRowStep   = 22
 	sessRowsMax   = 7
-	sessNameChars = 14
+	sessNameChars = 12 // room for the provider column: "A name........ P  12m 412k"
 	sessRowTopPad = 16
 
 	pageDashboard = 0
 	pageSessions  = 1
+
+	viewClaude = 0
+	viewAgy    = 1
+	viewAll    = 2
+	viewCount  = 3
+
+	maxBarRows = 4
 )
 
 var (
@@ -118,6 +126,11 @@ var (
 	colSpinTail  = color.RGBA{0, 45, 60, 255}
 
 	activePage = pageDashboard
+	activeView = viewClaude
+
+	// Label baselines per layout; a bar goes barOffset below its label.
+	rows3 = [3]int16{barsTop + 20, barsTop + 54, barsTop + 88}
+	rows4 = [4]int16{barsTop + 18, barsTop + 48, barsTop + 78, barsTop + 108}
 
 	// selRow is the highlighted row on the session list page; A opens it.
 	selRow int
@@ -138,9 +151,7 @@ var (
 // regions whose content actually changed (avoids flicker on the slow SPI bus).
 type uiCache struct {
 	counts   string
-	five     string
-	week     string
-	cred     string
+	rows     [maxBarRows]string
 	usage    string
 	banner   string
 	sessions [sessRowsMax]string
@@ -177,25 +188,51 @@ func setBacklight(on bool) {
 	display.EnableBacklight(on)
 }
 
-func drawStaticUI() {
-	tinyfont.WriteLine(&display, &freemono.Bold9pt7b, headerX, headerBaseline, "CLAUDE CONTROL", colTitle)
+// viewTitle names the current dashboard view (or the sessions page).
+func viewTitle() string {
+	if activePage == pageSessions {
+		return "SESSIONS"
+	}
 
-	if activePage == pageDashboard {
-		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, fiveLabelBase, "5-HOUR", colLabel)
-		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, weekLabelBase, "WEEKLY", colLabel)
-		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, credLabelBase, "CREDITS", colLabel)
-	} else {
-		// Short label: the spinner slot took the room a longer one would
-		// need, and "CLAUDE CONTROL" already reaches x=162.
-		writeRightAligned(&freemono.Regular9pt7b, spinnerX-6, headerBaseline, "LIST", colLabel)
+	switch activeView {
+	case viewAgy:
+		return "ANTIGRAVITY"
+	case viewAll:
+		return "CLAUDE + AGY"
+	default:
+		return "CLAUDE CONTROL"
 	}
 }
 
-// workingSessions is how many sessions are busy: every session is either
-// working or waiting, so the two counters the badge already receives give the
-// answer without an extra protocol field.
+// drawStaticUI paints the parts that only change with the page/view.
+func drawStaticUI() {
+	tinyfont.WriteLine(&display, &freemono.Bold9pt7b, headerX, headerBaseline, viewTitle(), colTitle)
+
+	if activePage != pageDashboard {
+		return
+	}
+
+	switch activeView {
+	case viewAll:
+		for i, label := range [4]string{"C 5H", "C WK", "G 5H", "G WK"} {
+			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows4[i], label, colLabel)
+		}
+	case viewAgy:
+		for i, label := range [3]string{"5-HOUR", "WEEKLY", "PROMPTS"} {
+			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows3[i], label, colLabel)
+		}
+	default:
+		for i, label := range [3]string{"5-HOUR", "WEEKLY", "CREDITS"} {
+			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows3[i], label, colLabel)
+		}
+	}
+}
+
+// workingSessions is how many sessions are busy across both providers: every
+// session is either working or waiting, so the counters already in the frame
+// give the answer without an extra field.
 func workingSessions(f frame) int {
-	n := f.chats - f.wait
+	n := f.totalChats() - f.totalWait()
 	if n < 0 {
 		return 0
 	}
@@ -270,11 +307,9 @@ func drawSoundIcon(off bool) {
 	}
 }
 
-// switchPage flips between the dashboard and the session list and repaints
-// everything from scratch.
-func switchPage(f frame, linked bool) {
-	activePage = 1 - activePage
-
+// repaintAll wipes the screen and redraws everything for the current page and
+// view (labels differ per view, so a partial repaint is not enough).
+func repaintAll(f frame, linked bool) {
 	display.FillScreen(colBg)
 
 	drawn = uiCache{}
@@ -282,6 +317,18 @@ func switchPage(f frame, linked bool) {
 
 	drawStaticUI()
 	render(f, linked)
+}
+
+// switchPage flips between the dashboard and the session list.
+func switchPage(f frame, linked bool) {
+	activePage = 1 - activePage
+	repaintAll(f, linked)
+}
+
+// switchView cycles the dashboard between CLAUDE, ANTIGRAVITY and ALL.
+func switchView(f frame, linked bool, delta int) {
+	activeView = (activeView + delta + viewCount) % viewCount
+	repaintAll(f, linked)
 }
 
 // render repaints every region whose content changed since the last call.
@@ -317,37 +364,72 @@ func render(f frame, linked bool) {
 }
 
 func renderDashboard(f frame, linked bool) {
-	renderCounts(f, linked)
+	switch activeView {
+	case viewAgy:
+		renderCounts(linked, f.agy.chats, f.agy.wait)
+		renderBarRow(0, rows3[0], f.agy.fivePct, limitValue(f.agy.fivePct, f.agy.fiveRst, ""), colValue)
+		renderBarRow(1, rows3[1], f.agy.weekPct, limitValue(f.agy.weekPct, f.agy.weekRst, ""), colValue)
+		renderTextRow(2, rows3[2], strconv.Itoa(f.agyPrompts))
+		renderUsage("")
+	case viewAll:
+		renderCounts(linked, f.totalChats(), f.totalWait())
+		renderBarRow(0, rows4[0], f.fivePct, limitValue(f.fivePct, f.fiveRst, f.fiveEta), etaColor(f.fiveEta))
+		renderBarRow(1, rows4[1], f.weekPct, limitValue(f.weekPct, f.weekRst, ""), colValue)
+		renderBarRow(2, rows4[2], f.agy.fivePct, limitValue(f.agy.fivePct, f.agy.fiveRst, ""), colValue)
+		renderBarRow(3, rows4[3], f.agy.weekPct, limitValue(f.agy.weekPct, f.agy.weekRst, ""), colValue)
+	default:
+		renderCounts(linked, f.chats, f.wait)
+		renderBarRow(0, rows3[0], f.fivePct, limitValue(f.fivePct, f.fiveRst, f.fiveEta), etaColor(f.fiveEta))
+		renderBarRow(1, rows3[1], f.weekPct, limitValue(f.weekPct, f.weekRst, ""), colValue)
+		renderBarRow(2, rows3[2], f.credPct, creditsValue(f.credPct, f.credTxt), colValue)
+		renderUsage("IN " + fmtTokens(f.tokIn) + "  OUT " + fmtTokens(f.tokOut))
+	}
+}
 
-	fiveColor := colValue
-	if f.fiveEta != "" {
-		fiveColor = colBad
+// etaColor turns the 5-hour value red when the burn-rate forecast is binding.
+func etaColor(eta string) color.RGBA {
+	if eta != "" {
+		return colBad
 	}
 
-	five := limitValue(f.fivePct, f.fiveRst, f.fiveEta)
-	if !drawn.valid || drawn.five != five {
-		drawLimitRow(fiveLabelBase, fiveBarY, f.fivePct, five, fiveColor)
-		drawn.five = five
+	return colValue
+}
+
+// renderBarRow repaints one labelled bar row when its value changed.
+func renderBarRow(slot int, labelBase int16, pct int, value string, valueColor color.RGBA) {
+	key := value + "|" + strconv.Itoa(pct)
+	if drawn.valid && drawn.rows[slot] == key {
+		return
 	}
 
-	week := limitValue(f.weekPct, f.weekRst, "")
-	if !drawn.valid || drawn.week != week {
-		drawLimitRow(weekLabelBase, weekBarY, f.weekPct, week, colValue)
-		drawn.week = week
+	drawLimitRow(labelBase, labelBase+barOffset, pct, value, valueColor)
+	drawn.rows[slot] = key
+}
+
+// renderTextRow is a bar row without the bar: just a right-aligned value.
+func renderTextRow(slot int, labelBase int16, value string) {
+	if drawn.valid && drawn.rows[slot] == value {
+		return
 	}
 
-	cred := creditsValue(f.credPct, f.credTxt)
-	if !drawn.valid || drawn.cred != cred {
-		drawLimitRow(credLabelBase, credBarY, f.credPct, cred, colValue)
-		drawn.cred = cred
+	display.FillRectangle(barX+labelColW, labelBase-rowLabelH+4, screenW-barX-labelColW-barX, rowLabelH, colBg)
+	display.FillRectangle(barX, labelBase+barOffset, barW, barH, colBg)
+	writeRightAligned(&freemono.Regular9pt7b, screenW-barX, labelBase, value, colValue)
+	drawn.rows[slot] = value
+}
+
+func renderUsage(text string) {
+	if drawn.valid && drawn.usage == text {
+		return
 	}
 
-	usage := "IN " + fmtTokens(f.tokIn) + "  OUT " + fmtTokens(f.tokOut)
-	if !drawn.valid || drawn.usage != usage {
-		display.FillRectangle(0, usageTop, screenW, usageH, colBg)
-		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, usageX, usageBaseline, usage, colUsage)
-		drawn.usage = usage
+	display.FillRectangle(0, usageTop, screenW, usageH, colBg)
+
+	if text != "" {
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, usageX, usageBaseline, text, colUsage)
 	}
+
+	drawn.usage = text
 }
 
 func renderSessions(f frame, linked bool) {
@@ -426,7 +508,8 @@ type sessLine struct {
 }
 
 // sessionLines lays the session rows out as fixed-width text (the font is
-// monospace): NAME.......... P MMMm CTX.
+// monospace): "C NAME........ P MMMm CTX" — provider, name, phase, minutes,
+// context.
 func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 	var rows [sessRowsMax]sessLine
 
@@ -457,7 +540,7 @@ func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 			ctx = fmtTokens(s.ctx)
 		}
 
-		text := padRight(s.name, sessNameChars) + " " + string(s.phase) + " " +
+		text := string(s.prov) + " " + padRight(s.name, sessNameChars) + " " + string(s.phase) + " " +
 			padLeft(mins, 4) + " " + padLeft(ctx, 6)
 
 		rows[i] = sessLine{text: text, color: phaseColor(s.phase)}
@@ -484,27 +567,27 @@ func phaseColor(phase byte) color.RGBA {
 	}
 }
 
-func renderCounts(f frame, linked bool) {
-	chats := "-"
-	wait := "-"
+func renderCounts(linked bool, chats, wait int) {
+	chatsTxt := "-"
+	waitTxt := "-"
 	if linked {
-		chats = strconv.Itoa(f.chats)
-		wait = strconv.Itoa(f.wait)
+		chatsTxt = strconv.Itoa(chats)
+		waitTxt = strconv.Itoa(wait)
 	}
 
-	key := chats + "|" + wait
+	key := chatsTxt + "|" + waitTxt
 	if drawn.valid && drawn.counts == key {
 		return
 	}
 
 	waitColor := colDim
-	if linked && f.wait > 0 {
+	if linked && wait > 0 {
 		waitColor = colBad
 	}
 
 	display.FillRectangle(0, countsTop, screenW, countsH, colBg)
-	tinyfont.WriteLine(&display, &freemono.Bold12pt7b, chatsX, countsBaseline, "CHATS "+chats, colValue)
-	tinyfont.WriteLine(&display, &freemono.Bold12pt7b, waitX, countsBaseline, "WAIT "+wait, waitColor)
+	tinyfont.WriteLine(&display, &freemono.Bold12pt7b, chatsX, countsBaseline, "CHATS "+chatsTxt, colValue)
+	tinyfont.WriteLine(&display, &freemono.Bold12pt7b, waitX, countsBaseline, "WAIT "+waitTxt, waitColor)
 
 	drawn.counts = key
 }
@@ -576,7 +659,7 @@ func bannerContent(f frame, linked bool) (text string, bg, fg color.RGBA) {
 		return "NO LINK", colBanner, colDim
 	}
 
-	if f.wait > 0 {
+	if f.totalWait() > 0 {
 		msg := f.msg
 		if msg == "" {
 			msg = "ACTION NEEDED"

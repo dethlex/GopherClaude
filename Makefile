@@ -7,6 +7,11 @@ AGENT_LABEL := com.claudecontrol.badge-agent
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT_LABEL).plist
 
 .DEFAULT_GOAL := help
+# TinyGo lags the Go release cycle (0.41 supports Go 1.19–1.26); pin the Go
+# toolchain it sees so a brew-upgraded Go does not break the firmware build.
+TINYGO_GO := go1.26.0
+TINYGO    := GOTOOLCHAIN=$(TINYGO_GO) tinygo
+
 .PHONY: help firmware flash flash-monitor monitor agent run dry-run demo-eyes \
         test vet install-hooks uninstall-hooks install-agent uninstall-agent \
         tinygo-update clean
@@ -19,24 +24,24 @@ help: ## Show this help
 
 firmware: ## Build the firmware into build/claudecontrol.uf2
 	@mkdir -p build
-	cd $(FIRMWARE_DIR) && tinygo build -target=$(TARGET) -o ../$(UF2) .
+	cd $(FIRMWARE_DIR) && $(TINYGO) build -target=$(TARGET) -o ../$(UF2) .
 	@ls -la $(UF2)
 
 flash: ## Flash the Gopher Badge (pauses the agent service; picotool fallback)
 	-@launchctl bootout gui/$$(id -u)/$(AGENT_LABEL) 2>/dev/null || true
-	cd $(FIRMWARE_DIR) && tinygo flash -target=$(TARGET) . || \
+	cd $(FIRMWARE_DIR) && $(TINYGO) flash -target=$(TARGET) . || \
 		{ echo "RPI-RP2 volume did not mount — trying picotool (PICOBOOT, no volume)..."; \
-		  tinygo build -target=$(TARGET) -o /tmp/claudecontrol-flash.uf2 . && \
+		  $(TINYGO) build -target=$(TARGET) -o /tmp/claudecontrol-flash.uf2 . && \
 		  picotool load -x /tmp/claudecontrol-flash.uf2; }
 	-@[ -f $(AGENT_PLIST) ] && launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST) 2>/dev/null || true
 
 flash-monitor: ## Flash and open the serial monitor (agent service stays off)
 	-@launchctl bootout gui/$$(id -u)/$(AGENT_LABEL) 2>/dev/null || true
-	cd $(FIRMWARE_DIR) && tinygo flash -target=$(TARGET) -monitor .
+	cd $(FIRMWARE_DIR) && $(TINYGO) flash -target=$(TARGET) -monitor .
 	@echo "Agent service stopped (the monitor needs the port). Restore it with: make install-agent"
 
 monitor: ## Serial monitor (close it before starting the agent!)
-	cd $(FIRMWARE_DIR) && tinygo monitor -target=$(TARGET)
+	cd $(FIRMWARE_DIR) && $(TINYGO) monitor -target=$(TARGET)
 
 ## --- Host agent (Go) ---
 

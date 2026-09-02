@@ -74,6 +74,7 @@ func demoScene(elapsed time.Duration) (name string, snapshot domain.Snapshot, in
 // stale-looking bars would be misleading.
 func withUnknownPlan(s domain.Snapshot) domain.Snapshot {
 	s.Plan = domain.UnknownPlanUsage()
+	s.Agy.Plan = domain.UnknownPlanUsage()
 
 	return s
 }
