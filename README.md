@@ -11,7 +11,7 @@ blocked chat — with light and sound.
 
 ```
 ┌─────────────────────────────────┐
-│ CLAUDE CONTROL              ◐ ● │
+│ ✳ CLAUDE                    ◐ ● │
 │ CHATS 4                  WAIT 2 │
 │ 5-HOUR                   44% 3h │
 │ [██████████··············]      │
@@ -26,6 +26,9 @@ blocked chat — with light and sound.
 
 - **`◐`** — progress spinner: animates while any session is actually working.
 - **`●`** — link status: green when the agent is connected, red when not.
+- **`✳` / `✦`** — provider marks, drawn pixel by pixel: Claude's burst and
+  Antigravity's spark. They label the header, the bars of the combined view and
+  every session row, so no view needs a letter to say whose numbers these are.
 - **Bars** — 5-hour / weekly / credits usage; blue, amber at ≥70%, red at ≥90%.
 - **Bottom line** — the alert banner: `ALL QUIET`, the alerting project and
   reason (`PERM` / `INPUT`), or `NO LINK`.
@@ -41,11 +44,14 @@ blocked chat — with light and sound.
   filling; if you're on track to hit the cap *before* it resets, the badge
   shows a red `ETA 1.4h` instead of the reset time.
 - **Antigravity (Gemini) too** — D-pad ↑/↓ on the dashboard cycles three
-  views: `CLAUDE CONTROL`, `ANTIGRAVITY` (live `agy` chats, Gemini 5-hour and
-  weekly quota, prompts sent today) and `CLAUDE + AGY` (summed counts plus four
-  slim bars). Alerts, the banner and the eyes cover both providers.
+  views: `CLAUDE`, `ANTIGRAVITY` (live `agy` chats, Gemini 5-hour and
+  weekly quota, prompts sent today) and `ALL` (summed counts plus four
+  slim bars). Alerts, the banner and the eyes cover both providers. Only
+  installed assistants get a screen: without `~/.gemini/antigravity-cli` the
+  badge stays on the Claude dashboard, ↑/↓ do nothing, and the session list
+  drops the provider column in favour of longer project names.
 - **Session list page** — flip pages with the D-pad (left/right) to see every
-  session across both providers: `C`/`A` column, project name, phase (`P`
+  session across both providers: provider mark, project name, phase (`P`
   waiting for permission, `I` waiting for input, `W` working), minutes in that
   phase, and context size (`412k`).
 - **Jump to a chat** — move the cursor with the D-pad (up/down) and press
@@ -200,7 +206,7 @@ Hooks only take effect for sessions started afterwards.
 One line per frame, fields separated by `|`:
 
 ```
-CC4|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>\n
+CC5|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>|<providers>\n
 ```
 
 The first 13 fields describe Claude Code, the trailing 7 Antigravity; the badge
@@ -209,7 +215,9 @@ Percentages are `0..100`, or `-1` when unknown. Reset and ETA columns are
 host-formatted durations (`3h`, `45m`, `2d`) because the badge has no clock.
 `<sessions>` is up to 8 rows of `name~phase~minutes~ctx~provider` joined by
 `;` (phase is `P` / `I` / `W`, provider `C` / `A`), waits first across both
-providers. Text fields are printable ASCII only — the badge fonts are 7-bit.
+providers. `<providers>` is the letters of the assistants the host monitors
+(`C`, `CA`) — the badge offers a screen only for an assistant that is
+installed. Text fields are printable ASCII only — the badge fonts are 7-bit.
 
 The badge echoes `ok chats=N wait=M` per frame (logged at debug level); if no
 frame arrives for 10 seconds it shows `NO LINK`.
@@ -221,7 +229,7 @@ works from the background service.
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and
-bump the `CC4` prefix on incompatible changes so a stale-firmware badge shows
+bump the `CC5` prefix on incompatible changes so a stale-firmware badge shows
 `NO LINK` instead of garbage.
 
 ## Make targets

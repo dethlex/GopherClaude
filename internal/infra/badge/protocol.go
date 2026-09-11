@@ -12,7 +12,7 @@ import (
 
 // Wire format, one frame per line (firmware/protocol.go is the peer):
 //
-//	CC4|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>\n
+//	CC5|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>|<providers>\n
 //
 // The first block is Claude Code, the trailing ag_* block is Antigravity.
 // Percentages are 0..100, or -1 when unavailable. Reset/ETA columns are
@@ -24,8 +24,11 @@ import (
 // merged:
 //
 //	name~phase~minutes~ctx_tokens~provider(;next)*   phase: P|I|W  provider: C|A
+//
+// <providers> lists the assistants this host monitors as their letters ("C",
+// "CA"): the badge offers a screen only for an assistant that is installed.
 const (
-	framePrefix = "CC4"
+	framePrefix = "CC5"
 	maxMsgLen   = 24
 	maxNameLen  = 14
 
@@ -91,7 +94,23 @@ func Encode(s domain.Snapshot, now time.Time) string {
 		"|" + formatReset(s.Agy.Plan.FiveHour, now) +
 		"|" + strconv.Itoa(s.Agy.Plan.Weekly.Pct) +
 		"|" + formatReset(s.Agy.Plan.Weekly, now) +
-		"|" + strconv.Itoa(s.Agy.Prompts)
+		"|" + strconv.Itoa(s.Agy.Prompts) +
+		"|" + encodeProviders(s.Providers)
+}
+
+// encodeProviders renders the monitored assistants as their letters. An empty
+// set would leave the badge with nothing to show, so it falls back to Claude.
+func encodeProviders(providers []domain.Provider) string {
+	if len(providers) == 0 {
+		return string(providerLetter(domain.ProviderClaude))
+	}
+
+	letters := make([]byte, 0, len(providers))
+	for _, p := range providers {
+		letters = append(letters, providerLetter(p))
+	}
+
+	return string(letters)
 }
 
 func encodeSessions(sessions []domain.SessionBrief) string {

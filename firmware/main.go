@@ -65,8 +65,6 @@ func main() {
 	// reflects them immediately.
 	soundOff = loadSettings().soundOff
 
-	drawStaticUI()
-
 	var (
 		state        frame
 		linked       bool
@@ -95,6 +93,7 @@ func main() {
 		}
 	}
 
+	drawStaticUI(state)
 	render(state, linked)
 	updateLEDs(state, linked, false, blinkOn)
 
@@ -132,7 +131,13 @@ func main() {
 					touch(now)
 				}
 
-				render(state, linked)
+				// A changed assistant set rewrites the labels and
+				// marks, so the chrome goes with it.
+				if syncProviders(state) {
+					repaintAll(state, linked)
+				} else {
+					render(state, linked)
+				}
 
 				if newAlert && !muted {
 					alertUntil = now.Add(alertBlinkWindow)

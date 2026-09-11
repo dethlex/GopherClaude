@@ -123,6 +123,10 @@ type (
 		// so the badge can ask to open a specific list row by index.
 		FocusTargets []FocusTarget
 		Agy          ProviderStats
+		// Providers is which assistants this host actually monitors, in
+		// display order. The badge hides the screens of one that is not
+		// installed instead of showing empty numbers for it.
+		Providers []Provider
 	}
 
 	// Command is a button action the badge sends back to the host.

@@ -55,11 +55,12 @@ func (m *Monitor) Snapshot(now time.Time) domain.Snapshot {
 	}
 
 	snap := domain.Snapshot{
-		Chats:   len(claude.states),
-		Waiting: claude.waiting,
-		Usage:   usage,
-		Plan:    planOf(m.src.Claude.Plan, now),
-		Agy:     domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
+		Chats:     len(claude.states),
+		Waiting:   claude.waiting,
+		Usage:     usage,
+		Plan:      planOf(m.src.Claude.Plan, now),
+		Agy:       domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
+		Providers: []domain.Provider{domain.ProviderClaude},
 	}
 
 	all := claude.states
@@ -67,6 +68,7 @@ func (m *Monitor) Snapshot(now time.Time) domain.Snapshot {
 	if m.src.Agy != nil {
 		agy := m.collect(*m.src.Agy, now)
 		all = append(all, agy.states...)
+		snap.Providers = append(snap.Providers, domain.ProviderAntigravity)
 
 		snap.Agy = domain.ProviderStats{
 			Chats:   len(agy.states),

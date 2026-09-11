@@ -14,7 +14,7 @@ import (
 //
 // CLAUDE view:                         ANTIGRAVITY view:
 //
-//	CLAUDE CONTROL           ◐ [#] ●    ANTIGRAVITY              ◐ [#] ●
+//	✳ CLAUDE                 ◐ [#] ●    ✦ ANTIGRAVITY            ◐ [#] ●
 //	CHATS 4           WAIT 2            CHATS 6           WAIT 3
 //	5-HOUR              44% 3h          5-HOUR              22% 4h
 //	[##########............]            [#####.................]
@@ -25,8 +25,14 @@ import (
 //	IN 156.4k  OUT 783.5k
 //	========== BANNER ==========        ========== BANNER ==========
 //
-// ALL view: summed CHATS/WAIT and four thin bars (C 5H, C WK, G 5H, G WK).
-// Sessions page: one row per session across providers, "C"/"A" column first.
+// ALL view: "✳✦ ALL", summed CHATS/WAIT and four thin bars, each labelled by
+// its provider mark (✳ 5H, ✳ WK, ✦ 5H, ✦ WK).
+// Sessions page: one row per session across providers, provider mark first.
+//
+// The frame says which assistants the host monitors. With only one of them
+// installed the badge drops everything about the other: the dashboard keeps
+// that assistant's screen alone (no ANTIGRAVITY or ALL view to switch to) and
+// the session list spends the mark column on longer project names.
 const (
 	screenW = 320
 	screenH = 240
@@ -36,9 +42,14 @@ const (
 
 	headerBaseline = 20
 	headerX        = 8
-	linkDotX       = 300
-	linkDotY       = 8
-	linkDotSize    = 12
+
+	// Provider marks sit on the text baseline, in the header and in front
+	// of the ALL view's bar labels and every session row.
+	headerMarkY = headerBaseline - markSize - 1
+	markTextX   = headerX + markSize + markGap
+	linkDotX    = 300
+	linkDotY    = 8
+	linkDotSize = 12
 
 	// Crossed-out speaker icon, shown left of the link dot while muted.
 	soundIconX = 270
@@ -89,8 +100,11 @@ const (
 	sessRowBase   = 48
 	sessRowStep   = 22
 	sessRowsMax   = 7
-	sessNameChars = 12 // room for the provider column: "A name........ P  12m 412k"
-	sessRowTopPad = 16
+	sessNameChars = 12 // room for the provider column: "✳ name........ P  12m 412k"
+	// Without the provider column (a single assistant installed) the name
+	// takes the space back.
+	sessNameWideChars = 14
+	sessRowTopPad     = 16
 
 	pageDashboard = 0
 	pageSessions  = 1
@@ -99,6 +113,13 @@ const (
 	viewAgy    = 1
 	viewAll    = 2
 	viewCount  = 3
+
+	// noSoleView marks a host running both assistants: no single view is
+	// forced, all three are available.
+	noSoleView = -1
+
+	providerBitClaude = 1 << 0
+	providerBitAgy    = 1 << 1
 
 	maxBarRows = 4
 )
@@ -134,6 +155,10 @@ var (
 
 	// selRow is the highlighted row on the session list page; A opens it.
 	selRow int
+
+	// drawnProviders is the assistant set the current chrome was drawn
+	// for, so a host that gains or loses one triggers a full repaint.
+	drawnProviders byte
 
 	// spinnerPhase is the animation step; spinnerShown is what is currently
 	// on screen (-1 = the slot is blank), so the slot is only repainted when
@@ -198,15 +223,97 @@ func viewTitle() string {
 	case viewAgy:
 		return "ANTIGRAVITY"
 	case viewAll:
-		return "CLAUDE + AGY"
+		return "ALL"
 	default:
-		return "CLAUDE CONTROL"
+		return "CLAUDE"
 	}
 }
 
+// headerShowsMark decides which provider marks precede the title: a dashboard
+// view is marked by whatever it shows, while the session list marks every
+// assistant the host actually monitors.
+func headerShowsMark(f frame, prov byte) bool {
+	if activePage == pageSessions {
+		return providerPresent(f, prov)
+	}
+
+	switch activeView {
+	case viewAll:
+		return true
+	case viewAgy:
+		return prov == provAgy
+	default:
+		return prov == provClaude
+	}
+}
+
+func providerPresent(f frame, prov byte) bool {
+	if prov == provAgy {
+		return f.hasAgy
+	}
+
+	return f.hasClaude
+}
+
+// providerBits packs the frame's assistant set so a change is a cheap compare.
+func providerBits(f frame) byte {
+	var bits byte
+
+	if f.hasClaude {
+		bits |= providerBitClaude
+	}
+
+	if f.hasAgy {
+		bits |= providerBitAgy
+	}
+
+	return bits
+}
+
+// soleView is the only dashboard view a single-assistant host can show, or
+// noSoleView when both are installed and all three views are available.
+func soleView(f frame) int {
+	if bothProviders(f) {
+		return noSoleView
+	}
+
+	if f.hasAgy {
+		return viewAgy
+	}
+
+	return viewClaude
+}
+
+// syncProviders keeps the screen honest when the host's assistant set changes
+// (the agent restarted after Antigravity was installed or removed): it parks
+// the dashboard on a view that still exists and reports whether the chrome has
+// to be repainted.
+func syncProviders(f frame) bool {
+	if providerBits(f) == drawnProviders {
+		return false
+	}
+
+	if sole := soleView(f); sole != noSoleView {
+		activeView = sole
+	}
+
+	return true
+}
+
 // drawStaticUI paints the parts that only change with the page/view.
-func drawStaticUI() {
-	tinyfont.WriteLine(&display, &freemono.Bold9pt7b, headerX, headerBaseline, viewTitle(), colTitle)
+func drawStaticUI(f frame) {
+	x := int16(headerX)
+
+	for _, prov := range [2]byte{provClaude, provAgy} {
+		if !headerShowsMark(f, prov) {
+			continue
+		}
+
+		drawProviderMark(prov, x, headerMarkY)
+		x += markSize + markGap
+	}
+
+	tinyfont.WriteLine(&display, &freemono.Bold9pt7b, x, headerBaseline, viewTitle(), colTitle)
 
 	if activePage != pageDashboard {
 		return
@@ -214,8 +321,16 @@ func drawStaticUI() {
 
 	switch activeView {
 	case viewAll:
-		for i, label := range [4]string{"C 5H", "C WK", "G 5H", "G WK"} {
-			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows4[i], label, colLabel)
+		// The bars alternate provider, so each label carries its mark
+		// instead of a letter.
+		for i, label := range [4]string{"5H", "WK", "5H", "WK"} {
+			prov := byte(provClaude)
+			if i >= 2 {
+				prov = provAgy
+			}
+
+			drawProviderMark(prov, barX, rows4[i]-markSize)
+			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, markTextX, rows4[i], label, colLabel)
 		}
 	case viewAgy:
 		for i, label := range [3]string{"5-HOUR", "WEEKLY", "PROMPTS"} {
@@ -314,8 +429,9 @@ func repaintAll(f frame, linked bool) {
 
 	drawn = uiCache{}
 	spinnerShown = -1 // the full wipe cleared the slot too
+	drawnProviders = providerBits(f)
 
-	drawStaticUI()
+	drawStaticUI(f)
 	render(f, linked)
 }
 
@@ -325,8 +441,14 @@ func switchPage(f frame, linked bool) {
 	repaintAll(f, linked)
 }
 
-// switchView cycles the dashboard between CLAUDE, ANTIGRAVITY and ALL.
+// switchView cycles the dashboard between CLAUDE, ANTIGRAVITY and ALL. With a
+// single assistant installed there is nothing to switch to, so the D-pad stays
+// inert rather than offering screens with no data behind them.
 func switchView(f frame, linked bool, delta int) {
+	if !bothProviders(f) {
+		return
+	}
+
 	activeView = (activeView + delta + viewCount) % viewCount
 	repaintAll(f, linked)
 }
@@ -440,9 +562,10 @@ func renderSessions(f frame, linked bool) {
 	for i := 0; i < sessRowsMax; i++ {
 		selected := i == selRow && rowSelectable(f, i)
 
-		// The selection flag is part of the cache key so moving the
-		// cursor repaints both the old and the new row.
-		key := rows[i].text
+		// The selection flag and the provider are part of the cache key
+		// so moving the cursor repaints both the old and the new row,
+		// and a row that changes provider repaints its mark.
+		key := string(rows[i].prov) + rows[i].text
 		if selected {
 			key = ">" + key
 		}
@@ -460,9 +583,20 @@ func renderSessions(f frame, linked bool) {
 
 		display.FillRectangle(0, y-sessRowTopPad, screenW, sessRowStep, bg)
 
-		if rows[i].text != "" {
-			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, y, rows[i].text, rows[i].color)
+		if rows[i].text == "" {
+			drawn.sessions[i] = key
+
+			continue
 		}
+
+		// Rows without a provider ("no sessions", "+N more") keep the
+		// left margin so the list stays visually aligned.
+		textX := int16(barX)
+		if drawProviderMark(rows[i].prov, barX, y-markSize) {
+			textX = markTextX
+		}
+
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, textX, y, rows[i].text, rows[i].color)
 
 		drawn.sessions[i] = key
 	}
@@ -505,11 +639,12 @@ func moveSelection(f frame, delta int) {
 type sessLine struct {
 	text  string
 	color color.RGBA
+	prov  byte
 }
 
 // sessionLines lays the session rows out as fixed-width text (the font is
-// monospace): "C NAME........ P MMMm CTX" — provider, name, phase, minutes,
-// context.
+// monospace): "NAME........ P MMMm CTX" — name, phase, minutes, context. The
+// provider is drawn as a mark in front of the text, not written into it.
 func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 	var rows [sessRowsMax]sessLine
 
@@ -527,6 +662,15 @@ func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 		more = len(f.sessions) - visible
 	}
 
+	// The provider column is only worth its width when both assistants are
+	// installed; alone, every row would carry the same mark.
+	both := bothProviders(f)
+
+	nameChars := sessNameChars
+	if !both {
+		nameChars = sessNameWideChars
+	}
+
 	for i := 0; i < visible; i++ {
 		s := f.sessions[i]
 
@@ -540,10 +684,14 @@ func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 			ctx = fmtTokens(s.ctx)
 		}
 
-		text := string(s.prov) + " " + padRight(s.name, sessNameChars) + " " + string(s.phase) + " " +
+		text := padRight(s.name, nameChars) + " " + string(s.phase) + " " +
 			padLeft(mins, 4) + " " + padLeft(ctx, 6)
 
 		rows[i] = sessLine{text: text, color: phaseColor(s.phase)}
+
+		if both {
+			rows[i].prov = s.prov
+		}
 	}
 
 	if more > 0 {

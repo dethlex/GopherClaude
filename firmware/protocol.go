@@ -8,15 +8,17 @@ import (
 
 // Host -> badge wire format, one frame per line:
 //
-//	CC4|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>\n
+//	CC5|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>|<providers>\n
 //
 // The first block is Claude Code, the ag_* block is Antigravity. Percentages
 // are 0..100, or -1 when the host could not obtain the value.
 // <sessions> = name~phase~minutes~ctx_tokens~provider entries joined by ';',
 // phase is one of P (permission), I (input), W (working); provider C or A.
+// <providers> are the letters of the assistants the host monitors ("C", "CA"):
+// an assistant that is not installed gets no screen at all.
 const (
-	framePrefix = "CC4"
-	frameFields = 21
+	framePrefix = "CC5"
+	frameFields = 22
 
 	pctUnknown = -1
 
@@ -64,6 +66,11 @@ type frame struct {
 
 	agy        providerStats
 	agyPrompts int
+
+	// Which assistants the host monitors; the renderer offers screens and
+	// marks only for these.
+	hasClaude bool
+	hasAgy    bool
 }
 
 var errBadFrame = errors.New("bad frame")
@@ -112,9 +119,35 @@ func parseFrame(line string) (frame, error) {
 	f.sessions = parseSessions(parts[13])
 	f.agy.fiveRst = parts[17]
 	f.agy.weekRst = parts[19]
+	f.hasClaude, f.hasAgy = parseProviders(parts[21])
 
 	return f, nil
 }
+
+// parseProviders reads the monitored-assistant letters. An empty or unknown
+// set falls back to Claude alone: this badge is useless with no screen, and
+// Claude Code is what it is built around.
+func parseProviders(s string) (claude, agy bool) {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case provClaude:
+			claude = true
+		case provAgy:
+			agy = true
+		}
+	}
+
+	if !claude && !agy {
+		claude = true
+	}
+
+	return claude, agy
+}
+
+// bothProviders reports whether the host monitors Claude and Antigravity at
+// once — the only case where the badge needs a provider column, the combined
+// view, and a way to switch between screens.
+func bothProviders(f frame) bool { return f.hasClaude && f.hasAgy }
 
 // parseSessions tolerates malformed entries (skips them) so a single torn
 // row never discards the whole frame.

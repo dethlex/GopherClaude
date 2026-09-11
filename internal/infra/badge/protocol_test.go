@@ -40,12 +40,13 @@ func TestEncode(t *testing.T) {
 			},
 			Prompts: 7,
 		},
+		Providers: []domain.Provider{domain.ProviderClaude, domain.ProviderAntigravity},
 	}
 
 	got := Encode(snap, now)
-	want := "CC4|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
+	want := "CC5|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
 		"|ClaudeControl~P~5~412000~C;rotator~W~0~73000~A" +
-		"|2|1|22|4h|18|6d|7"
+		"|2|1|22|4h|18|6d|7|CA"
 
 	if got != want {
 		t.Errorf("Encode() =\n%q\nwant\n%q", got, want)
@@ -59,10 +60,26 @@ func TestEncodeUnknownPlan(t *testing.T) {
 	}
 
 	got := Encode(snap, time.Now())
-	want := "CC4|0|0|-1|||-1||-1||0|0||" + "|0|0|-1||-1||0"
+
+	// No providers listed: the badge still needs one screen, so Claude.
+	want := "CC5|0|0|-1|||-1||-1||0|0||" + "|0|0|-1||-1||0|C"
 
 	if got != want {
 		t.Errorf("Encode() = %q, want %q", got, want)
+	}
+}
+
+func TestEncodeProvidersWithoutAntigravity(t *testing.T) {
+	snap := domain.Snapshot{
+		Plan:      domain.UnknownPlanUsage(),
+		Agy:       domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
+		Providers: []domain.Provider{domain.ProviderClaude},
+	}
+
+	got := Encode(snap, time.Now())
+
+	if !strings.HasSuffix(got, "|C") {
+		t.Errorf("Encode() = %q, want it to end with the Claude-only provider set", got)
 	}
 }
 

@@ -97,9 +97,14 @@ func TestMonitorSnapshot(t *testing.T) {
 		t.Errorf("FocusTargets = %+v", got.FocusTargets)
 	}
 
-	// Without Antigravity wired, its block is explicitly "unknown", not 0%.
+	// Without Antigravity wired, its block is explicitly "unknown", not 0%,
+	// and the badge is told not to show its screens at all.
 	if got.Agy.Chats != 0 || got.Agy.Plan.FiveHour.Pct != domain.UnknownPct {
 		t.Errorf("Agy = %+v, want empty with unknown plan", got.Agy)
+	}
+
+	if len(got.Providers) != 1 || got.Providers[0] != domain.ProviderClaude {
+		t.Errorf("Providers = %v, want Claude alone", got.Providers)
 	}
 }
 
@@ -139,6 +144,10 @@ func TestMonitorMergesAntigravity(t *testing.T) {
 
 	if got.Agy.Chats != 2 || got.Agy.Waiting != 1 || got.Agy.Prompts != 7 || got.Agy.Plan.FiveHour.Pct != 22 {
 		t.Errorf("Agy = %+v", got.Agy)
+	}
+
+	if len(got.Providers) != 2 || got.Providers[1] != domain.ProviderAntigravity {
+		t.Errorf("Providers = %v, want Claude and Antigravity", got.Providers)
 	}
 
 	// The banner follows the newest wait regardless of provider.
