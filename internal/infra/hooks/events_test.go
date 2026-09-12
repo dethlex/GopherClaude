@@ -1,4 +1,4 @@
-package claudefs
+package hooks
 
 import (
 	"os"
@@ -32,12 +32,12 @@ func TestEventLogLatest(t *testing.T) {
 		t.Fatalf("Latest() returned %d sessions, want 2", len(latest))
 	}
 
-	if latest["s1"].Name != "UserPromptSubmit" {
-		t.Errorf("s1 latest = %q, want UserPromptSubmit", latest["s1"].Name)
+	if s1 := latest["s1"]; s1.Phase != domain.PhaseWorking || !s1.Decisive || s1.At.Unix() != 200 {
+		t.Errorf("s1 latest = %+v, want the UserPromptSubmit at 200 (working, decisive)", s1)
 	}
 
-	if latest["s2"].Name != "Stop" {
-		t.Errorf("s2 latest = %q, want Stop", latest["s2"].Name)
+	if s2 := latest["s2"]; s2.Phase != domain.PhaseWaitingInput || !s2.Decisive {
+		t.Errorf("s2 latest = %+v, want Stop (waiting for input, decisive)", s2)
 	}
 }
 
@@ -61,8 +61,8 @@ func TestEventLogToleratesHugeLines(t *testing.T) {
 		t.Fatalf("Latest() error = %v", err)
 	}
 
-	if latest["s1"].Name != "Stop" {
-		t.Errorf("s1 latest = %q, want Stop", latest["s1"].Name)
+	if latest["s1"].Phase != domain.PhaseWaitingInput {
+		t.Errorf("s1 latest = %+v, want Stop", latest["s1"])
 	}
 }
 
@@ -77,70 +77,36 @@ func TestEventLogMissingFile(t *testing.T) {
 	}
 }
 
-func TestEventPhase(t *testing.T) {
+func TestPhaseOf(t *testing.T) {
 	tests := []struct {
 		name     string
-		event    Event
+		event    string
+		notify   string
 		want     domain.Phase
 		decisive bool
 	}{
-		{
-			name:     "permission prompt",
-			event:    Event{Name: "Notification", Notify: "permission_prompt"},
-			want:     domain.PhaseWaitingPermission,
-			decisive: true,
-		},
-		{
-			name:     "idle prompt",
-			event:    Event{Name: "Notification", Notify: "idle_prompt"},
-			want:     domain.PhaseWaitingInput,
-			decisive: true,
-		},
-		{
-			name:     "stop",
-			event:    Event{Name: "Stop"},
-			want:     domain.PhaseWaitingInput,
-			decisive: true,
-		},
-		{
-			name:     "post tool use clears waiting",
-			event:    Event{Name: "PostToolUse"},
-			want:     domain.PhaseWorking,
-			decisive: true,
-		},
-		{
-			name:     "codex permission request",
-			event:    Event{Name: "PermissionRequest"},
-			want:     domain.PhaseWaitingPermission,
-			decisive: true,
-		},
-		{
-			name:     "codex interrupt ends the turn",
-			event:    Event{Name: "Interrupt"},
-			want:     domain.PhaseWaitingInput,
-			decisive: true,
-		},
-		{
-			name:     "unknown notification is not decisive",
-			event:    Event{Name: "Notification", Notify: "auth_success"},
-			decisive: false,
-		},
-		{
-			name:     "unknown event is not decisive",
-			event:    Event{Name: "SomethingNew"},
-			decisive: false,
-		},
+		{"permission prompt", "Notification", "permission_prompt", domain.PhaseWaitingPermission, true},
+		{"idle prompt", "Notification", "idle_prompt", domain.PhaseWaitingInput, true},
+		{"stop", "Stop", "", domain.PhaseWaitingInput, true},
+		{"agy idle", "Idle", "", domain.PhaseWaitingInput, true},
+		{"codex interrupt ends the turn", "Interrupt", "", domain.PhaseWaitingInput, true},
+		{"codex permission request", "PermissionRequest", "", domain.PhaseWaitingPermission, true},
+		{"post tool use clears waiting", "PostToolUse", "", domain.PhaseWorking, true},
+		{"prompt submitted", "UserPromptSubmit", "", domain.PhaseWorking, true},
+		{"session start", "SessionStart", "", domain.PhaseWorking, true},
+		{"unknown notification is not decisive", "Notification", "auth_success", domain.PhaseWorking, false},
+		{"unknown event is not decisive", "SomethingNew", "", domain.PhaseWorking, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, decisive := tt.event.Phase()
+			got, decisive := phaseOf(tt.event, tt.notify)
 			if decisive != tt.decisive {
-				t.Fatalf("Phase() decisive = %v, want %v", decisive, tt.decisive)
+				t.Fatalf("phaseOf() decisive = %v, want %v", decisive, tt.decisive)
 			}
 
 			if decisive && got != tt.want {
-				t.Errorf("Phase() = %v, want %v", got, tt.want)
+				t.Errorf("phaseOf() = %v, want %v", got, tt.want)
 			}
 		})
 	}

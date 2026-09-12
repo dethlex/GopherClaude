@@ -36,11 +36,14 @@ func (p Phase) Waiting() bool {
 type (
 	// Session is one live interactive assistant session on this machine.
 	Session struct {
-		Provider  Provider
-		ID        string
-		PID       int
-		Dir       string
-		Status    string
+		Provider Provider
+		ID       string
+		PID      int
+		Dir      string
+		// Idle is the provider's own word that the session sits unoccupied
+		// (Claude Code writes an idle/waiting status for cli sessions); it
+		// outranks the transcript heuristic but not a hook event.
+		Idle      bool
 		Model     string // as launched, e.g. "gemini-3.7-flash-high"; may be empty
 		StartedAt time.Time
 	}
@@ -63,6 +66,16 @@ type (
 		Phase     Phase
 		Minutes   int // time spent in the current phase, 0 when unknown
 		CtxTokens uint64
+	}
+
+	// HookEvent is a session's newest hook notification, already
+	// interpreted by the source: Decisive is false for events that say
+	// nothing about the phase (a session start, an unknown notification).
+	HookEvent struct {
+		SessionID string
+		Phase     Phase
+		Decisive  bool
+		At        time.Time
 	}
 
 	// Usage is the aggregated token usage for the current day.
@@ -184,6 +197,20 @@ type (
 	// PhaseResolver determines what each session is doing.
 	PhaseResolver interface {
 		ResolveAll(sessions []Session, now time.Time) []SessionState
+	}
+
+	// HookEventSource reports the latest hook event per session id. Each
+	// assistant's event vocabulary is mapped to a Phase by the source, so
+	// the resolver never sees provider-specific names.
+	HookEventSource interface {
+		Latest() (map[string]HookEvent, error)
+	}
+
+	// PhaseInspector is a provider's fallback phase heuristic and context
+	// estimate for one session (transcript tail, conversation-db mtime,
+	// rollout tail), consulted when no hook event decides the phase.
+	PhaseInspector interface {
+		Inspect(session Session) (Phase, uint64, error)
 	}
 
 	// Sink delivers snapshots to the badge (or to a log in dry-run mode)

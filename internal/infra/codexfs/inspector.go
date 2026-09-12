@@ -21,11 +21,13 @@ type RolloutDir struct {
 	paths map[string]string
 }
 
+var _ domain.PhaseInspector = (*RolloutDir)(nil)
+
 func NewRolloutDir(sessionsDir string) *RolloutDir {
 	return &RolloutDir{sessionsDir: sessionsDir, paths: map[string]string{}}
 }
 
-// Inspect implements the phase-inspector contract used by the resolver.
+// Inspect implements domain.PhaseInspector.
 func (d *RolloutDir) Inspect(session domain.Session) (domain.Phase, uint64, error) {
 	path, err := d.path(session.ID)
 	if err != nil {

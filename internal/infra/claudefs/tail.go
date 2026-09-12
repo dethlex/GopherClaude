@@ -32,6 +32,8 @@ type TranscriptDir struct {
 	dir string
 }
 
+var _ domain.PhaseInspector = (*TranscriptDir)(nil)
+
 func NewTranscriptDir(dir string) *TranscriptDir {
 	return &TranscriptDir{dir: dir}
 }

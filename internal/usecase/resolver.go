@@ -1,4 +1,4 @@
-package claudefs
+package usecase
 
 import (
 	"log/slog"
@@ -13,36 +13,32 @@ const (
 	reasonInput      = "INPUT"
 )
 
-// Registry statuses that mean the session is not busy. Claude Code writes
-// these for cli sessions; claude-desktop ones carry no status at all.
-const (
-	statusIdle    = "idle"
-	statusWaiting = "waiting"
-)
-
 // workingEventTTL bounds how long a "working" hook event stays authoritative.
 // Hooks are lossy: claude-desktop sessions never emit Stop, so the last event
 // of a finished turn is a PostToolUse — and without an expiry that would pin
 // the session to "working" forever (a spinner that never stops). "Waiting"
 // events get no expiry on purpose: a permission dialog can sit for hours and
 // the transcript cannot tell one from a running tool, while "working" is
-// momentary and the transcript detects it reliably on its own.
+// momentary and the inspector detects it reliably on its own.
 const workingEventTTL = 30 * time.Second
 
 // Resolver determines each session's phase, combining sources by precedence:
-// hook events (exact) > registry status (cli sessions only) > transcript
-// tail heuristic.
+// hook events (exact) > the provider's own idle flag > the provider's
+// inspector heuristic. It is provider-neutral: every assistant plugs in its
+// event source and inspector.
 type Resolver struct {
-	events      *EventLog
-	transcripts Inspector
-	logger      *slog.Logger
+	events    domain.HookEventSource
+	inspector domain.PhaseInspector
+	logger    *slog.Logger
 }
 
-func NewResolver(events *EventLog, transcripts Inspector, logger *slog.Logger) *Resolver {
+var _ domain.PhaseResolver = (*Resolver)(nil)
+
+func NewResolver(events domain.HookEventSource, inspector domain.PhaseInspector, logger *slog.Logger) *Resolver {
 	return &Resolver{
-		events:      events,
-		transcripts: transcripts,
-		logger:      logger.With("module", "resolver"),
+		events:    events,
+		inspector: inspector,
+		logger:    logger.With("module", "resolver"),
 	}
 }
 
@@ -60,28 +56,26 @@ func (r *Resolver) ResolveAll(sessions []domain.Session, now time.Time) []domain
 	return states
 }
 
-func (r *Resolver) resolve(session domain.Session, events map[string]Event, now time.Time) domain.SessionState {
-	// The transcript tail is read regardless of how the phase is decided:
-	// it is the only source of the session's context size.
-	tailPhase, ctxTokens, err := r.transcripts.Inspect(session)
+func (r *Resolver) resolve(session domain.Session, events map[string]domain.HookEvent, now time.Time) domain.SessionState {
+	// The inspector runs regardless of how the phase is decided: it is the
+	// only source of the session's context size.
+	tailPhase, ctxTokens, err := r.inspector.Inspect(session)
 	if err != nil {
-		r.logger.Debug("transcript heuristic", "session", session.ID, "error", err)
+		r.logger.Debug("phase heuristic", "session", session.ID, "error", err)
 	}
 
-	if event, ok := events[session.ID]; ok {
-		if phase, decisive := event.Phase(); decisive && eventAuthoritative(phase, event.At, now) {
-			return domain.SessionState{
-				Session:   session,
-				Phase:     phase,
-				Reason:    reasonFor(phase),
-				Since:     event.At,
-				CtxTokens: ctxTokens,
-			}
+	if event, ok := events[session.ID]; ok && event.Decisive && eventAuthoritative(event.Phase, event.At, now) {
+		return domain.SessionState{
+			Session:   session,
+			Phase:     event.Phase,
+			Reason:    reasonFor(event.Phase),
+			Since:     event.At,
+			CtxTokens: ctxTokens,
 		}
 	}
 
 	phase := tailPhase
-	if session.Status == statusIdle || session.Status == statusWaiting {
+	if session.Idle {
 		phase = domain.PhaseWaitingInput
 	}
 
@@ -115,10 +109,4 @@ func reasonFor(phase domain.Phase) string {
 	default:
 		return ""
 	}
-}
-
-// Inspector is the per-provider fallback phase heuristic (transcript tail for
-// Claude Code, conversation-db mtime for Antigravity) and context estimate.
-type Inspector interface {
-	Inspect(session domain.Session) (domain.Phase, uint64, error)
 }

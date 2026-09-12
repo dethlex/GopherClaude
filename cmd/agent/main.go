@@ -21,6 +21,7 @@ import (
 	"github.com/dethlex/GopherClaude/internal/infra/claudefs"
 	"github.com/dethlex/GopherClaude/internal/infra/codexfs"
 	"github.com/dethlex/GopherClaude/internal/infra/google"
+	"github.com/dethlex/GopherClaude/internal/infra/hooks"
 	"github.com/dethlex/GopherClaude/internal/infra/host"
 	"github.com/dethlex/GopherClaude/internal/infra/openai"
 	"github.com/dethlex/GopherClaude/internal/usecase"
@@ -69,12 +70,12 @@ func run() error {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	events := claudefs.NewEventLog(*eventsFile)
+	events := hooks.NewEventLog(*eventsFile)
 
 	sources := usecase.Sources{
 		Claude: usecase.ProviderSources{
 			Sessions: claudefs.NewSessionRegistry(filepath.Join(*claudeDir, "sessions"), logger),
-			Phases: claudefs.NewResolver(events,
+			Phases: usecase.NewResolver(events,
 				claudefs.NewTranscriptDir(filepath.Join(*claudeDir, "projects")), logger),
 			Plan: anthropic.NewPlanFetcher(logger),
 		},
@@ -171,7 +172,7 @@ func run() error {
 
 // agySources wires the Antigravity feeds, or returns nil when agy is not
 // installed on this machine (its data directory is absent).
-func agySources(dir string, events *claudefs.EventLog, logger *slog.Logger) *usecase.ProviderSources {
+func agySources(dir string, events *hooks.EventLog, logger *slog.Logger) *usecase.ProviderSources {
 	if _, err := os.Stat(dir); err != nil {
 		logger.Info("antigravity not detected, skipping", "module", "main", "dir", dir)
 
@@ -185,7 +186,7 @@ func agySources(dir string, events *claudefs.EventLog, logger *slog.Logger) *use
 
 	return &usecase.ProviderSources{
 		Sessions: agyfs.NewSessionRegistry(filepath.Join(dir, "presence"), logger),
-		Phases:   claudefs.NewResolver(events, agyfs.NewConversationDir(filepath.Join(dir, "conversations")), logger),
+		Phases:   usecase.NewResolver(events, agyfs.NewConversationDir(filepath.Join(dir, "conversations")), logger),
 		Plan:     google.NewQuotaFetcher(filepath.Join(dir, "antigravity-oauth-token"), agyBinary, logger),
 		Prompts:  agyfs.NewHistory(filepath.Join(dir, "history.jsonl"), time.Local, logger),
 	}
@@ -202,7 +203,7 @@ func defaultCodexDir(home string) string {
 
 // codexSources wires the Codex feeds, or returns nil when Codex is not
 // installed on this machine (its data directory is absent).
-func codexSources(dir string, events *claudefs.EventLog, logger *slog.Logger) *usecase.ProviderSources {
+func codexSources(dir string, events *hooks.EventLog, logger *slog.Logger) *usecase.ProviderSources {
 	if _, err := os.Stat(dir); err != nil {
 		logger.Info("codex not detected, skipping", "module", "main", "dir", dir)
 
@@ -213,7 +214,7 @@ func codexSources(dir string, events *claudefs.EventLog, logger *slog.Logger) *u
 
 	return &usecase.ProviderSources{
 		Sessions: codexfs.NewSessionRegistry(filepath.Join(dir, "thread-writer-locks"), sessionsDir, logger),
-		Phases:   claudefs.NewResolver(events, codexfs.NewRolloutDir(sessionsDir), logger),
+		Phases:   usecase.NewResolver(events, codexfs.NewRolloutDir(sessionsDir), logger),
 		Plan:     openai.NewUsageFetcher(filepath.Join(dir, "auth.json"), logger),
 		Prompts:  codexfs.NewPromptCounter(sessionsDir, time.Local, logger),
 	}

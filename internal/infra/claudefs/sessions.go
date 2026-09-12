@@ -1,5 +1,5 @@
 // Package claudefs reads Claude Code state from the local filesystem:
-// the live-session registry, transcript files and badge hook events.
+// the live-session registry and transcript files.
 package claudefs
 
 import (
@@ -13,6 +13,13 @@ import (
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+)
+
+// Registry statuses that mean the session is not busy. Claude Code writes
+// these for cli sessions; claude-desktop ones carry no status at all.
+const (
+	statusIdle    = "idle"
+	statusWaiting = "waiting"
 )
 
 // SessionRegistry lists live interactive sessions from ~/.claude/sessions,
@@ -93,7 +100,7 @@ func (r *SessionRegistry) Sessions() ([]domain.Session, error) {
 			ID:        sf.SessionID,
 			PID:       sf.PID,
 			Dir:       sf.CWD,
-			Status:    sf.Status,
+			Idle:      sf.Status == statusIdle || sf.Status == statusWaiting,
 			StartedAt: time.UnixMilli(sf.StartedAt),
 		})
 	}

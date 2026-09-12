@@ -21,11 +21,13 @@ type ConversationDir struct {
 	now func() time.Time
 }
 
+var _ domain.PhaseInspector = (*ConversationDir)(nil)
+
 func NewConversationDir(dir string) *ConversationDir {
 	return &ConversationDir{dir: dir, now: time.Now}
 }
 
-// Inspect implements the phase-inspector contract used by the resolver.
+// Inspect implements domain.PhaseInspector.
 func (c *ConversationDir) Inspect(session domain.Session) (domain.Phase, uint64, error) {
 	info, err := os.Stat(filepath.Join(c.dir, session.ID+".db"))
 	if err != nil {
