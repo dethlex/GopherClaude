@@ -10,29 +10,30 @@ import (
 	"tinygo.org/x/tinyfont/freemono"
 )
 
-// Two pages (D-pad left/right); the dashboard has three views (D-pad up/down):
+// Two pages (D-pad left/right); the dashboard cycles its views with D-pad
+// up/down. The view list is built from the frame: CLAUDE, one view per extra
+// assistant the host monitors (ANTIGRAVITY, CODEX), and ALL once there are
+// at least two providers.
 //
-// CLAUDE view:                         ANTIGRAVITY view:
+// CLAUDE view:                         CODEX view (ANTIGRAVITY looks the same):
 //
-//	✳ CLAUDE                 ◐ [#] ●    ✦ ANTIGRAVITY            ◐ [#] ●
-//	CHATS 4           WAIT 2            CHATS 6           WAIT 3
-//	5-HOUR              44% 3h          5-HOUR              22% 4h
-//	[##########............]            [#####.................]
-//	WEEKLY              17% 2d          WEEKLY              18% 6d
+//	✳ CLAUDE                 ◐ [#] ●    ⬡ CODEX                  ◐ [#] ●
+//	CHATS 4           WAIT 2            CHATS 1           WAIT 1
+//	5-HOUR              44% 3h          5-HOUR                  --
+//	[##########............]            [......................]
+//	WEEKLY              17% 2d          WEEKLY              17% 6d
 //	[#####.................]            [####..................]
-//	CREDITS           32.66/50          PROMPTS                 7
+//	CREDITS           32.66/50          PROMPTS                 3
 //	[###############.......]
 //	IN 156.4k  OUT 783.5k
 //	========== BANNER ==========        ========== BANNER ==========
 //
-// ALL view: "✳✦ ALL", summed CHATS/WAIT and four thin bars, each labelled by
-// its provider mark (✳ 5H, ✳ WK, ✦ 5H, ✦ WK).
+// ALL view: "✳ ✦ ⬡ ALL", summed CHATS/WAIT, then one row per provider with
+// its mark and two half-width bars (5H left, WK right).
 // Sessions page: one row per session across providers, provider mark first.
 //
-// The frame says which assistants the host monitors. With only one of them
-// installed the badge drops everything about the other: the dashboard keeps
-// that assistant's screen alone (no ANTIGRAVITY or ALL view to switch to) and
-// the session list spends the mark column on longer project names.
+// With a single assistant installed the badge drops everything about the
+// others: no view to switch to and no mark column in the session list.
 const (
 	screenW = 320
 	screenH = 240
@@ -73,14 +74,15 @@ const (
 	chatsX         = 8
 	waitX          = 190
 
-	barX      = 8
-	barW      = screenW - 2*barX
-	barH      = 8
-	rowLabelH = 18
-	labelColW = 90
+	barX       = 8
+	barW       = screenW - 2*barX
+	barH       = 8
+	minBarFill = 2 // a non-zero value always shows a sliver
+	rowLabelH  = 18
+	labelColW  = 90
 
-	// Bar rows: three tall rows for a single provider, four tighter rows
-	// for the combined view. Bars sit 6px under their label baseline.
+	// Bar rows of a provider view: three tall rows, bars 6px under their
+	// label baseline. The combined view has its own pitch (allRowPitch).
 	barsTop   = 60
 	barOffset = 6
 
@@ -109,19 +111,22 @@ const (
 	pageDashboard = 0
 	pageSessions  = 1
 
-	viewClaude = 0
-	viewAgy    = 1
-	viewAll    = 2
-	viewCount  = 3
+	// Dashboard views: provider letters plus the combined view, listed per
+	// frame (see buildViews). viewAllMark is the pseudo-letter of ALL.
+	maxProviders = 1 + maxExtras
+	maxViews     = maxProviders + 1
+	viewAllMark  = '*'
 
-	// noSoleView marks a host running both assistants: no single view is
-	// forced, all three are available.
-	noSoleView = -1
+	// Combined view: one row per provider, two half-width columns per row.
+	// Four rows of allRowPitch fit between the counters and the banner.
+	allRowPitch  = 36
+	allFirstBase = barsTop + 18
+	halfGap      = 12
+	halfW        = (barW - halfGap) / 2
+	rightHalfX   = barX + halfW + halfGap
+	halfLabelW   = 40 // mark plus "5H"/"WK" before a column's value area
 
-	providerBitClaude = 1 << 0
-	providerBitAgy    = 1 << 1
-
-	maxBarRows = 4
+	maxBarRows = 2 * maxProviders
 )
 
 var (
@@ -147,18 +152,23 @@ var (
 	colSpinTail  = color.RGBA{0, 45, 60, 255}
 
 	activePage = pageDashboard
-	activeView = viewClaude
 
-	// Label baselines per layout; a bar goes barOffset below its label.
+	// views is the dashboard view list for the current frame (provider
+	// letters, then viewAllMark); activeView indexes it. Before the first
+	// frame it holds Claude alone.
+	views      = [maxViews]byte{provClaude}
+	viewCount  = 1
+	activeView int
+
+	// Label baselines of a provider view; a bar goes barOffset below.
 	rows3 = [3]int16{barsTop + 20, barsTop + 54, barsTop + 88}
-	rows4 = [4]int16{barsTop + 18, barsTop + 48, barsTop + 78, barsTop + 108}
 
 	// selRow is the highlighted row on the session list page; A opens it.
 	selRow int
 
 	// drawnProviders is the assistant set the current chrome was drawn
 	// for, so a host that gains or loses one triggers a full repaint.
-	drawnProviders byte
+	drawnProviders providerSet
 
 	// spinnerPhase is the animation step; spinnerShown is what is currently
 	// on screen (-1 = the slot is blank), so the slot is only repainted when
@@ -213,89 +223,94 @@ func setBacklight(on bool) {
 	display.EnableBacklight(on)
 }
 
+// providerSet lists the frame's assistant letters, Claude first, zero-padded.
+// Arrays compare with ==, so "did the set change" is one cheap check.
+type providerSet [maxProviders]byte
+
+func providersOf(f frame) providerSet {
+	var set providerSet
+
+	set[0] = provClaude
+	for i := 0; i < f.extraCount; i++ {
+		set[i+1] = f.extras[i].prov
+	}
+
+	return set
+}
+
 // viewTitle names the current dashboard view (or the sessions page).
 func viewTitle() string {
 	if activePage == pageSessions {
 		return "SESSIONS"
 	}
 
-	switch activeView {
-	case viewAgy:
+	return providerTitle(views[activeView])
+}
+
+// providerTitle names a dashboard view by its letter.
+func providerTitle(p byte) string {
+	switch p {
+	case provAgy:
 		return "ANTIGRAVITY"
-	case viewAll:
+	case provCodex:
+		return "CODEX"
+	case viewAllMark:
 		return "ALL"
 	default:
 		return "CLAUDE"
 	}
 }
 
-// headerShowsMark decides which provider marks precede the title: a dashboard
-// view is marked by whatever it shows, while the session list marks every
-// assistant the host actually monitors.
-func headerShowsMark(f frame, prov byte) bool {
-	if activePage == pageSessions {
-		return providerPresent(f, prov)
-	}
-
-	switch activeView {
-	case viewAll:
+// headerShowsMark decides which provider marks precede the title: a provider
+// view is marked by its own assistant, while ALL and the session list mark
+// every assistant the host monitors.
+func headerShowsMark(prov byte) bool {
+	if activePage == pageSessions || views[activeView] == viewAllMark {
 		return true
-	case viewAgy:
-		return prov == provAgy
-	default:
-		return prov == provClaude
 	}
+
+	return views[activeView] == prov
 }
 
-func providerPresent(f frame, prov byte) bool {
-	if prov == provAgy {
-		return f.hasAgy
+// buildViews lists the dashboard views the frame allows: Claude, each extra
+// assistant in the host's order, and ALL once there is something to sum. The
+// current view survives when its letter is still present; otherwise the
+// dashboard parks on Claude.
+func buildViews(f frame) {
+	current := views[activeView]
+
+	views[0] = provClaude
+	viewCount = 1
+
+	for i := 0; i < f.extraCount; i++ {
+		views[viewCount] = f.extras[i].prov
+		viewCount++
 	}
 
-	return f.hasClaude
-}
-
-// providerBits packs the frame's assistant set so a change is a cheap compare.
-func providerBits(f frame) byte {
-	var bits byte
-
-	if f.hasClaude {
-		bits |= providerBitClaude
+	if f.extraCount > 0 {
+		views[viewCount] = viewAllMark
+		viewCount++
 	}
 
-	if f.hasAgy {
-		bits |= providerBitAgy
+	activeView = 0
+
+	for i := 0; i < viewCount; i++ {
+		if views[i] == current {
+			activeView = i
+		}
 	}
-
-	return bits
-}
-
-// soleView is the only dashboard view a single-assistant host can show, or
-// noSoleView when both are installed and all three views are available.
-func soleView(f frame) int {
-	if bothProviders(f) {
-		return noSoleView
-	}
-
-	if f.hasAgy {
-		return viewAgy
-	}
-
-	return viewClaude
 }
 
 // syncProviders keeps the screen honest when the host's assistant set changes
-// (the agent restarted after Antigravity was installed or removed): it parks
-// the dashboard on a view that still exists and reports whether the chrome has
-// to be repainted.
+// (the agent restarted after an assistant was installed or removed): it
+// rebuilds the view list, parks the dashboard on a view that still exists and
+// reports whether the chrome has to be repainted.
 func syncProviders(f frame) bool {
-	if providerBits(f) == drawnProviders {
+	if providersOf(f) == drawnProviders {
 		return false
 	}
 
-	if sole := soleView(f); sole != noSoleView {
-		activeView = sole
-	}
+	buildViews(f)
 
 	return true
 }
@@ -304,8 +319,8 @@ func syncProviders(f frame) bool {
 func drawStaticUI(f frame) {
 	x := int16(headerX)
 
-	for _, prov := range [2]byte{provClaude, provAgy} {
-		if !headerShowsMark(f, prov) {
+	for _, prov := range providersOf(f) {
+		if prov == 0 || !headerShowsMark(prov) {
 			continue
 		}
 
@@ -319,31 +334,42 @@ func drawStaticUI(f frame) {
 		return
 	}
 
-	switch activeView {
-	case viewAll:
-		// The bars alternate provider, so each label carries its mark
-		// instead of a letter.
-		for i, label := range [4]string{"5H", "WK", "5H", "WK"} {
-			prov := byte(provClaude)
-			if i >= 2 {
-				prov = provAgy
-			}
-
-			drawProviderMark(prov, barX, rows4[i]-markSize)
-			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, markTextX, rows4[i], label, colLabel)
-		}
-	case viewAgy:
-		for i, label := range [3]string{"5-HOUR", "WEEKLY", "PROMPTS"} {
+	switch views[activeView] {
+	case viewAllMark:
+		drawAllLabels(f)
+	case provClaude:
+		for i, label := range [3]string{"5-HOUR", "WEEKLY", "CREDITS"} {
 			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows3[i], label, colLabel)
 		}
 	default:
-		for i, label := range [3]string{"5-HOUR", "WEEKLY", "CREDITS"} {
+		for i, label := range [3]string{"5-HOUR", "WEEKLY", "PROMPTS"} {
 			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows3[i], label, colLabel)
 		}
 	}
 }
 
-// workingSessions is how many sessions are busy across both providers: every
+// drawAllLabels paints the combined view's chrome: per provider row its mark,
+// "5H" over the left column and "WK" over the right one.
+func drawAllLabels(f frame) {
+	for i, prov := range providersOf(f) {
+		if prov == 0 {
+			continue
+		}
+
+		base := allRowBase(i)
+
+		drawProviderMark(prov, barX, base-markSize)
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, markTextX, base, "5H", colLabel)
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, rightHalfX, base, "WK", colLabel)
+	}
+}
+
+// allRowBase is the label baseline of the i-th provider row on ALL.
+func allRowBase(i int) int16 {
+	return int16(allFirstBase + i*allRowPitch)
+}
+
+// workingSessions is how many sessions are busy across every provider: every
 // session is either working or waiting, so the counters already in the frame
 // give the answer without an extra field.
 func workingSessions(f frame) int {
@@ -429,7 +455,7 @@ func repaintAll(f frame, linked bool) {
 
 	drawn = uiCache{}
 	spinnerShown = -1 // the full wipe cleared the slot too
-	drawnProviders = providerBits(f)
+	drawnProviders = providersOf(f)
 
 	drawStaticUI(f)
 	render(f, linked)
@@ -441,11 +467,11 @@ func switchPage(f frame, linked bool) {
 	repaintAll(f, linked)
 }
 
-// switchView cycles the dashboard between CLAUDE, ANTIGRAVITY and ALL. With a
+// switchView cycles the dashboard through the views the frame allows. With a
 // single assistant installed there is nothing to switch to, so the D-pad stays
 // inert rather than offering screens with no data behind them.
 func switchView(f frame, linked bool, delta int) {
-	if !bothProviders(f) {
+	if viewCount < 2 {
 		return
 	}
 
@@ -486,26 +512,80 @@ func render(f frame, linked bool) {
 }
 
 func renderDashboard(f frame, linked bool) {
-	switch activeView {
-	case viewAgy:
-		renderCounts(linked, f.agy.chats, f.agy.wait)
-		renderBarRow(0, rows3[0], f.agy.fivePct, limitValue(f.agy.fivePct, f.agy.fiveRst, ""), colValue)
-		renderBarRow(1, rows3[1], f.agy.weekPct, limitValue(f.agy.weekPct, f.agy.weekRst, ""), colValue)
-		renderTextRow(2, rows3[2], strconv.Itoa(f.agyPrompts))
-		renderUsage("")
-	case viewAll:
-		renderCounts(linked, f.totalChats(), f.totalWait())
-		renderBarRow(0, rows4[0], f.fivePct, limitValue(f.fivePct, f.fiveRst, f.fiveEta), etaColor(f.fiveEta))
-		renderBarRow(1, rows4[1], f.weekPct, limitValue(f.weekPct, f.weekRst, ""), colValue)
-		renderBarRow(2, rows4[2], f.agy.fivePct, limitValue(f.agy.fivePct, f.agy.fiveRst, ""), colValue)
-		renderBarRow(3, rows4[3], f.agy.weekPct, limitValue(f.agy.weekPct, f.agy.weekRst, ""), colValue)
-	default:
+	switch view := views[activeView]; view {
+	case viewAllMark:
+		renderAll(f, linked)
+	case provClaude:
 		renderCounts(linked, f.chats, f.wait)
 		renderBarRow(0, rows3[0], f.fivePct, limitValue(f.fivePct, f.fiveRst, f.fiveEta), etaColor(f.fiveEta))
 		renderBarRow(1, rows3[1], f.weekPct, limitValue(f.weekPct, f.weekRst, ""), colValue)
 		renderBarRow(2, rows3[2], f.credPct, creditsValue(f.credPct, f.credTxt), colValue)
 		renderUsage("IN " + fmtTokens(f.tokIn) + "  OUT " + fmtTokens(f.tokOut))
+	default:
+		renderProvider(f.extraByLetter(view), linked)
 	}
+}
+
+// renderProvider is the screen of a secondary assistant: counts, both limit
+// bars and today's prompt count. Every such assistant shares this layout.
+func renderProvider(s providerStats, linked bool) {
+	renderCounts(linked, s.chats, s.wait)
+	renderBarRow(0, rows3[0], s.fivePct, limitValue(s.fivePct, s.fiveRst, ""), colValue)
+	renderBarRow(1, rows3[1], s.weekPct, limitValue(s.weekPct, s.weekRst, ""), colValue)
+	renderTextRow(2, rows3[2], strconv.Itoa(s.prompts))
+	renderUsage("")
+}
+
+// renderAll paints the combined view: summed counts, then per provider a row
+// of two half-width bars (5H left, WK right), Claude first. Cache slots are
+// row*2 + column.
+func renderAll(f frame, linked bool) {
+	renderCounts(linked, f.totalChats(), f.totalWait())
+
+	renderHalfRow(0, f.fivePct, allLimitValue(f.fivePct, f.fiveRst, f.fiveEta), etaColor(f.fiveEta),
+		f.weekPct, allLimitValue(f.weekPct, f.weekRst, ""))
+
+	for i := 0; i < f.extraCount; i++ {
+		e := f.extras[i]
+
+		renderHalfRow(i+1, e.fivePct, allLimitValue(e.fivePct, e.fiveRst, ""), colValue,
+			e.weekPct, allLimitValue(e.weekPct, e.weekRst, ""))
+	}
+}
+
+// allLimitValue is limitValue without the "ETA" word: a half-width column
+// has no room for it, so a binding forecast shows as the ETA in place of the
+// reset time, in the same red as on the provider's own screen.
+func allLimitValue(pct int, reset, eta string) string {
+	if eta != "" {
+		return limitValue(pct, eta, "")
+	}
+
+	return limitValue(pct, reset, "")
+}
+
+// renderHalfRow repaints the two columns of one ALL row when they changed.
+func renderHalfRow(row int, leftPct int, leftValue string, leftColor color.RGBA, rightPct int, rightValue string) {
+	base := allRowBase(row)
+
+	renderHalf(2*row, barX, base, leftPct, leftValue, leftColor)
+	renderHalf(2*row+1, rightHalfX, base, rightPct, rightValue, colValue)
+}
+
+// renderHalf is one half-width limit column: value right-aligned to the
+// column's edge, bar under the whole column (the left bar runs under the
+// mark too, so both bars line up as columns).
+func renderHalf(slot int, x, labelBase int16, pct int, value string, valueColor color.RGBA) {
+	key := value + "|" + strconv.Itoa(pct)
+	if drawn.valid && drawn.rows[slot] == key {
+		return
+	}
+
+	display.FillRectangle(x+halfLabelW, labelBase-rowLabelH+4, halfW-halfLabelW, rowLabelH, colBg)
+	writeRightAligned(&freemono.Regular9pt7b, x+halfW, labelBase, value, valueColor)
+	drawBar(x, labelBase+barOffset, halfW, pct)
+
+	drawn.rows[slot] = key
 }
 
 // etaColor turns the 5-hour value red when the burn-rate forecast is binding.
@@ -662,12 +742,12 @@ func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 		more = len(f.sessions) - visible
 	}
 
-	// The provider column is only worth its width when both assistants are
-	// installed; alone, every row would carry the same mark.
-	both := bothProviders(f)
+	// The provider column is only worth its width with two or more
+	// assistants installed; alone, every row would carry the same mark.
+	multi := f.providerCount() >= 2
 
 	nameChars := sessNameChars
-	if !both {
+	if !multi {
 		nameChars = sessNameWideChars
 	}
 
@@ -689,7 +769,7 @@ func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 
 		rows[i] = sessLine{text: text, color: phaseColor(s.phase)}
 
-		if both {
+		if multi {
 			rows[i].prov = s.prov
 		}
 	}
@@ -772,23 +852,28 @@ func creditsValue(pct int, text string) string {
 	return strconv.Itoa(pct) + "%"
 }
 
-// drawLimitRow repaints the value column and the progress bar of one row.
+// drawLimitRow repaints the value column and the progress bar of one
+// full-width row.
 func drawLimitRow(labelBase, barY int16, pct int, value string, valueColor color.RGBA) {
 	display.FillRectangle(barX+labelColW, labelBase-rowLabelH+4, screenW-barX-labelColW-barX, rowLabelH, colBg)
 	writeRightAligned(&freemono.Regular9pt7b, screenW-barX, labelBase, value, valueColor)
+	drawBar(barX, barY, barW, pct)
+}
 
-	display.FillRectangle(barX, barY, barW, barH, colTrack)
+// drawBar paints a track of width w and fills it to pct.
+func drawBar(x, y, w int16, pct int) {
+	display.FillRectangle(x, y, w, barH, colTrack)
 
 	if pct <= 0 {
 		return
 	}
 
-	fill := int16(int(barW) * pct / 100)
-	if fill < 2 {
-		fill = 2
+	fill := int16(int(w) * pct / 100)
+	if fill < minBarFill {
+		fill = minBarFill
 	}
 
-	display.FillRectangle(barX, barY, fill, barH, barColor(pct))
+	display.FillRectangle(x, y, fill, barH, barColor(pct))
 }
 
 func barColor(pct int) color.RGBA {

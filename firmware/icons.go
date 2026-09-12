@@ -4,8 +4,9 @@ import "image/color"
 
 // Provider marks. The badge's fonts are 7-bit ASCII, so a logo has to be
 // built from rectangles and pixels: Claude is its radiating burst, Antigravity
-// the four-pointed Gemini spark. Both fill a markSize box and are selected by
-// the provider letter carried in the frame.
+// the four-pointed Gemini spark, Codex a hexagon ring (OpenAI's mark reduced
+// to its outline). Each fills a markSize box and is selected by the provider
+// letter carried in the frame.
 const (
 	markSize = 12
 	markGap  = 4
@@ -17,11 +18,20 @@ const (
 
 	// Spark: half the rows are listed, the rest mirror them.
 	sparkRows = markSize / 2
+
+	// Hexagon ring: flat top and bottom edges of markSize-2*hexEdgeInset
+	// pixels, hexSlope diagonal steps per corner, straight sides between.
+	hexEdgeInset = 3
+	hexSlope     = 3
 )
 
 var (
 	colClaudeMark = color.RGBA{217, 119, 87, 255}
 	colAgyMark    = color.RGBA{120, 140, 250, 255}
+
+	// OpenAI's mark is monochrome; light grey keeps it apart from the white
+	// value column without disappearing into the labels.
+	colCodexMark = color.RGBA{220, 220, 220, 255}
 
 	// Row widths of the spark's top half, tip first — the concave taper is
 	// what separates it from a plain diamond at this size.
@@ -36,6 +46,8 @@ func drawProviderMark(prov byte, x, y int16) bool {
 		drawClaudeMark(x, y)
 	case provAgy:
 		drawAgyMark(x, y)
+	case provCodex:
+		drawCodexMark(x, y)
 	default:
 		return false
 	}
@@ -73,4 +85,25 @@ func drawAgyMark(x, y int16) {
 		display.FillRectangle(left, y+row, w, 1, c)
 		display.FillRectangle(left, y+markSize-1-row, w, 1, c)
 	}
+}
+
+func drawCodexMark(x, y int16) {
+	c := colCodexMark
+	edgeW := int16(markSize - 2*hexEdgeInset)
+
+	// Flat top and bottom edges.
+	display.FillRectangle(x+hexEdgeInset, y, edgeW, 1, c)
+	display.FillRectangle(x+hexEdgeInset, y+markSize-1, edgeW, 1, c)
+
+	// Corner diagonals walking out from the edges to the sides.
+	for i := int16(1); i <= hexSlope; i++ {
+		display.SetPixel(x+hexEdgeInset-i, y+i, c)
+		display.SetPixel(x+markSize-1-hexEdgeInset+i, y+i, c)
+		display.SetPixel(x+hexEdgeInset-i, y+markSize-1-i, c)
+		display.SetPixel(x+markSize-1-hexEdgeInset+i, y+markSize-1-i, c)
+	}
+
+	// Straight sides between the corners.
+	display.FillRectangle(x, y+hexSlope, 1, markSize-2*hexSlope, c)
+	display.FillRectangle(x+markSize-1, y+hexSlope, 1, markSize-2*hexSlope, c)
 }

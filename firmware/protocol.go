@@ -8,17 +8,21 @@ import (
 
 // Host -> badge wire format, one frame per line:
 //
-//	CC5|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>|<providers>\n
+//	CC6|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
 //
-// The first block is Claude Code, the ag_* block is Antigravity. Percentages
-// are 0..100, or -1 when the host could not obtain the value.
+// The fixed block is Claude Code. <extras> carries every other installed
+// assistant as a repeated group joined by ';':
+//
+//	<P>~<chats>~<wait>~<5h_pct>~<5h_reset>~<wk_pct>~<wk_reset>~<prompts>   P: A (Antigravity) | X (Codex)
+//
+// An assistant is present exactly when its group arrives; an empty field
+// means Claude alone. Percentages are 0..100, or -1 when the host could not
+// obtain the value.
 // <sessions> = name~phase~minutes~ctx_tokens~provider entries joined by ';',
-// phase is one of P (permission), I (input), W (working); provider C or A.
-// <providers> are the letters of the assistants the host monitors ("C", "CA"):
-// an assistant that is not installed gets no screen at all.
+// phase is one of P (permission), I (input), W (working); provider C, A or X.
 const (
-	framePrefix = "CC5"
-	frameFields = 22
+	framePrefix = "CC6"
+	frameFields = 15
 
 	pctUnknown = -1
 
@@ -27,8 +31,14 @@ const (
 	sessionFieldSep  = "~"
 	sessionFieldsNum = 5
 
+	// The combined view fits four provider rows, so three assistants may
+	// come on top of Claude; a group beyond that is dropped, not an error.
+	maxExtras      = 3
+	extraFieldsNum = 8
+
 	provClaude = 'C'
 	provAgy    = 'A'
+	provCodex  = 'X'
 )
 
 type sessionRow struct {
@@ -39,14 +49,16 @@ type sessionRow struct {
 	prov  byte
 }
 
-// providerStats is one assistant's block of the frame.
+// providerStats is one secondary assistant's block of the frame.
 type providerStats struct {
+	prov    byte
 	chats   int
 	wait    int
 	fivePct int
 	fiveRst string
 	weekPct int
 	weekRst string
+	prompts int
 }
 
 type frame struct {
@@ -64,21 +76,49 @@ type frame struct {
 	msg      string
 	sessions []sessionRow
 
-	agy        providerStats
-	agyPrompts int
-
-	// Which assistants the host monitors; the renderer offers screens and
-	// marks only for these.
-	hasClaude bool
-	hasAgy    bool
+	// extras are the installed assistants besides Claude in the host's
+	// display order; extraCount says how many slots are filled.
+	extras     [maxExtras]providerStats
+	extraCount int
 }
 
 var errBadFrame = errors.New("bad frame")
 
-// totalChats / totalWait span both providers — alerts, eyes and the spinner
+// totalChats / totalWait span every provider — alerts, eyes and the spinner
 // do not care who is waiting.
-func (f frame) totalChats() int { return f.chats + f.agy.chats }
-func (f frame) totalWait() int  { return f.wait + f.agy.wait }
+func (f frame) totalChats() int {
+	n := f.chats
+	for i := 0; i < f.extraCount; i++ {
+		n += f.extras[i].chats
+	}
+
+	return n
+}
+
+func (f frame) totalWait() int {
+	n := f.wait
+	for i := 0; i < f.extraCount; i++ {
+		n += f.extras[i].wait
+	}
+
+	return n
+}
+
+// providerCount is how many assistants the frame covers, Claude included.
+func (f frame) providerCount() int { return 1 + f.extraCount }
+
+// extraByLetter returns a secondary assistant's block. A letter the frame no
+// longer carries yields an empty block with unknown limits: the view list is
+// rebuilt from the next frame anyway, so this only bridges one render.
+func (f frame) extraByLetter(p byte) providerStats {
+	for i := 0; i < f.extraCount; i++ {
+		if f.extras[i].prov == p {
+			return f.extras[i]
+		}
+	}
+
+	return providerStats{prov: p, fivePct: pctUnknown, weekPct: pctUnknown}
+}
 
 func parseFrame(line string) (frame, error) {
 	parts := strings.SplitN(line, "|", frameFields)
@@ -86,19 +126,13 @@ func parseFrame(line string) (frame, error) {
 		return frame{}, errBadFrame
 	}
 
-	ints := map[int]*int{}
 	var f frame
 
-	ints[1], ints[2], ints[3], ints[6], ints[8] = &f.chats, &f.wait, &f.fivePct, &f.weekPct, &f.credPct
-	ints[14], ints[15], ints[16], ints[18], ints[20] = &f.agy.chats, &f.agy.wait, &f.agy.fivePct, &f.agy.weekPct, &f.agyPrompts
-
-	for idx, dst := range ints {
-		v, err := strconv.Atoi(parts[idx])
-		if err != nil {
-			return frame{}, errBadFrame
-		}
-
-		*dst = v
+	if !atoiAll(
+		[]*int{&f.chats, &f.wait, &f.fivePct, &f.weekPct, &f.credPct},
+		[]string{parts[1], parts[2], parts[3], parts[6], parts[8]},
+	) {
+		return frame{}, errBadFrame
 	}
 
 	var err error
@@ -117,37 +151,70 @@ func parseFrame(line string) (frame, error) {
 	f.credTxt = parts[9]
 	f.msg = parts[12]
 	f.sessions = parseSessions(parts[13])
-	f.agy.fiveRst = parts[17]
-	f.agy.weekRst = parts[19]
-	f.hasClaude, f.hasAgy = parseProviders(parts[21])
+	f.extras, f.extraCount = parseExtras(parts[14])
 
 	return f, nil
 }
 
-// parseProviders reads the monitored-assistant letters. An empty or unknown
-// set falls back to Claude alone: this badge is useless with no screen, and
-// Claude Code is what it is built around.
-func parseProviders(s string) (claude, agy bool) {
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case provClaude:
-			claude = true
-		case provAgy:
-			agy = true
+// atoiAll parses each src into the matching dst; false on the first bad number.
+func atoiAll(dst []*int, src []string) bool {
+	for i := range dst {
+		v, err := strconv.Atoi(src[i])
+		if err != nil {
+			return false
 		}
+
+		*dst[i] = v
 	}
 
-	if !claude && !agy {
-		claude = true
-	}
-
-	return claude, agy
+	return true
 }
 
-// bothProviders reports whether the host monitors Claude and Antigravity at
-// once — the only case where the badge needs a provider column, the combined
-// view, and a way to switch between screens.
-func bothProviders(f frame) bool { return f.hasClaude && f.hasAgy }
+// parseExtras reads the secondary-assistant groups. A malformed group (wrong
+// field count, unknown letter, non-numeric counter) is skipped and groups
+// beyond maxExtras are dropped, so one torn group never discards the frame.
+func parseExtras(s string) ([maxExtras]providerStats, int) {
+	var (
+		extras [maxExtras]providerStats
+		count  int
+	)
+
+	if s == "" {
+		return extras, 0
+	}
+
+	for _, group := range strings.Split(s, sessionSep) {
+		if count == maxExtras {
+			break
+		}
+
+		fields := strings.Split(group, sessionFieldSep)
+		if len(fields) != extraFieldsNum || len(fields[0]) != 1 || !extraProvider(fields[0][0]) {
+			continue
+		}
+
+		st := providerStats{prov: fields[0][0], fiveRst: fields[4], weekRst: fields[6]}
+
+		if !atoiAll(
+			[]*int{&st.chats, &st.wait, &st.fivePct, &st.weekPct, &st.prompts},
+			[]string{fields[1], fields[2], fields[3], fields[5], fields[7]},
+		) {
+			continue
+		}
+
+		extras[count] = st
+		count++
+	}
+
+	return extras, count
+}
+
+// extraProvider reports whether the letter names an assistant this firmware
+// has a screen and a mark for; Claude is the fixed block, and a letter from a
+// newer host is skipped rather than drawn blank.
+func extraProvider(p byte) bool {
+	return p == provAgy || p == provCodex
+}
 
 // parseSessions tolerates malformed entries (skips them) so a single torn
 // row never discards the whole frame.
@@ -192,7 +259,7 @@ func parseSessions(s string) []sessionRow {
 	return rows
 }
 
-// waitingKinds splits the waiting sessions (both providers) by what they wait
+// waitingKinds splits the waiting sessions (every provider) by what they wait
 // for: a permission dialog (blocks the session until you answer) versus plain
 // input (the turn simply ended). The host sorts permission waits first and the
 // row list is capped at maxSessions, so a permission wait always makes it into

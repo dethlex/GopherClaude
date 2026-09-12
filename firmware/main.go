@@ -1,9 +1,10 @@
 // ClaudeControl firmware for the Gopher Badge (tinygo, target gopher-badge).
 //
-// The badge renders the state of Claude Code and Antigravity running on the
-// host: plan limits, the number of active chats and an alert banner when a
-// session waits for the user. Data arrives over USB CDC serial from the companion
-// host agent (cmd/agent in this repository); the badge itself has no network.
+// The badge renders the state of the coding assistants running on the host
+// (Claude Code, Antigravity, Codex): plan limits, the number of active chats
+// and an alert banner when a session waits for the user. Data arrives over USB
+// CDC serial from the companion host agent (cmd/agent in this repository); the
+// badge itself has no network.
 package main
 
 import (
@@ -121,7 +122,7 @@ func main() {
 				// keep the badge awake; only real work counts.
 				dataChanged := !linked || f.totalChats() != state.totalChats() || f.totalWait() != state.totalWait() ||
 					f.tokIn != state.tokIn || f.tokOut != state.tokOut || f.msg != state.msg ||
-					f.agyPrompts != state.agyPrompts
+					promptsChanged(f, state)
 
 				state = f
 				linked = true
@@ -178,8 +179,8 @@ func main() {
 			}
 		}
 
-		// Up/down: move the cursor on the session list, switch the
-		// dashboard view (CLAUDE / ANTIGRAVITY / ALL) otherwise.
+		// Up/down: move the cursor on the session list, cycle the dashboard
+		// views (CLAUDE, one per extra assistant, ALL) otherwise.
 		if btnUp.pressed() {
 			touch(now)
 
@@ -298,6 +299,23 @@ func main() {
 // alerting reports whether the short attention-grabbing blink window is open.
 func alerting(now, alertUntil time.Time, muted bool) bool {
 	return !muted && now.Before(alertUntil)
+}
+
+// promptsChanged reports whether a secondary assistant's daily prompt count
+// moved (or the set of assistants itself did): a new prompt is real activity
+// worth waking the badge for, unlike session minutes ticking.
+func promptsChanged(a, b frame) bool {
+	if a.extraCount != b.extraCount {
+		return true
+	}
+
+	for i := 0; i < a.extraCount; i++ {
+		if a.extras[i].prov != b.extras[i].prov || a.extras[i].prompts != b.extras[i].prompts {
+			return true
+		}
+	}
+
+	return false
 }
 
 // startWatchdog arms the hardware watchdog. A failure to configure it is not
