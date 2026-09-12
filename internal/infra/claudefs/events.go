@@ -12,15 +12,17 @@ import (
 	"github.com/dethlex/GopherClaude/internal/domain"
 )
 
-// Hook event names as Claude Code reports them on the hook's stdin.
+// Hook event names as Claude Code, agy and Codex report them on the hook's stdin.
 const (
-	hookNotification     = "Notification"
-	hookStop             = "Stop"
-	hookUserPromptSubmit = "UserPromptSubmit"
-	hookPostToolUse      = "PostToolUse"
-	hookSessionStart     = "SessionStart"
-	hookSessionEnd       = "SessionEnd"
-	hookIdle             = "Idle" // agy: waiting for input
+	hookNotification      = "Notification"
+	hookStop              = "Stop"
+	hookUserPromptSubmit  = "UserPromptSubmit"
+	hookPostToolUse       = "PostToolUse"
+	hookSessionStart      = "SessionStart"
+	hookSessionEnd        = "SessionEnd"
+	hookIdle              = "Idle"              // agy: waiting for input
+	hookPermissionRequest = "PermissionRequest" // Codex: an approval dialog is open
+	hookInterrupt         = "Interrupt"         // Codex: the user cut the turn short
 
 	notifyPermission = "permission_prompt"
 	notifyIdle       = "idle_prompt"
@@ -48,7 +50,9 @@ func (e Event) Phase() (domain.Phase, bool) {
 		default:
 			return domain.PhaseWorking, false
 		}
-	case hookStop, hookIdle:
+	case hookPermissionRequest:
+		return domain.PhaseWaitingPermission, true
+	case hookStop, hookIdle, hookInterrupt:
 		return domain.PhaseWaitingInput, true
 	case hookUserPromptSubmit, hookPostToolUse, hookSessionStart:
 		return domain.PhaseWorking, true

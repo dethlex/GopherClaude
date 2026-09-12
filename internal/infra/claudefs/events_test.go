@@ -109,6 +109,18 @@ func TestEventPhase(t *testing.T) {
 			decisive: true,
 		},
 		{
+			name:     "codex permission request",
+			event:    Event{Name: "PermissionRequest"},
+			want:     domain.PhaseWaitingPermission,
+			decisive: true,
+		},
+		{
+			name:     "codex interrupt ends the turn",
+			event:    Event{Name: "Interrupt"},
+			want:     domain.PhaseWaitingInput,
+			decisive: true,
+		},
+		{
 			name:     "unknown notification is not decisive",
 			event:    Event{Name: "Notification", Notify: "auth_success"},
 			decisive: false,
