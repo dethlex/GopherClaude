@@ -249,6 +249,13 @@ func (f *QuotaFetcher) refresh(ctx context.Context, refreshToken string, now tim
 		if err := json.Unmarshal(body, &tr); err != nil || tr.AccessToken == "" {
 			lastErr = fmt.Errorf("refresh with client %s: %s", shortID(p[0]), firstNonEmpty(tr.Error, resp.Status))
 
+			if tr.Error != "" {
+				// The OAuth server rejected the grant itself (invalid_grant,
+				// a revoked refresh token): only a new agy login fixes that,
+				// unlike a network hiccup worth retrying.
+				lastErr = fmt.Errorf("%w: %w", plancache.ErrLogin, lastErr)
+			}
+
 			continue
 		}
 

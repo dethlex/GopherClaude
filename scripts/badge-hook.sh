@@ -25,9 +25,11 @@ payload=$(jq -c '
      message: ((.message // "") | tostring | .[0:120]),
      cwd: ((.workspacePaths // [])[0] // .cwd // ""),
      provider: "agy"}
-  elif ((.transcript_path // "") | contains("/.codex/")) or has("model") then
-    # Codex: the Claude Code schema; transcript_path is a fallback key
-    # should session_id ever differ from the thread id.
+  elif ((.transcript_path // "") | test("/sessions/[0-9]{4}/[0-9]{2}/[0-9]{2}/rollout-")) then
+    # Codex: the Claude Code schema, told apart by its dated rollout path
+    # (Claude transcripts live under projects/<dir>/<uuid>.jsonl), which
+    # also survives a custom CODEX_HOME. transcript_path is kept as a
+    # fallback key should session_id ever differ from the thread id.
     {session_id, hook_event_name, cwd, transcript_path, provider: "codex"}
   else
     {session_id, hook_event_name, notification_type, message, cwd, provider: "claude"}

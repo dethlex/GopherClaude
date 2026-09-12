@@ -6,6 +6,7 @@ package lockfs
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +18,12 @@ import (
 	"github.com/dethlex/GopherClaude/internal/domain"
 )
 
-const lockExt = ".lock"
+const (
+	lockExt = ".lock"
+
+	// lsof's exit status when at least one requested file had no opener.
+	lsofNoOpeners = 1
+)
 
 type (
 	// Holder is one process holding one lock; ID is the file name without
@@ -51,12 +57,18 @@ func NewLister(dir string) *Lister {
 	return &Lister{Dir: dir, Run: runLsof}
 }
 
-// runLsof tolerates exit status 1: lsof returns it when some files have no
-// opener, which is not an error here.
+// runLsof tolerates exit status 1, which lsof returns when some files have no
+// opener; anything else (lsof missing, a bad argument) is a real error the
+// registry should report rather than mistake for "no sessions".
 func runLsof(args ...string) ([]byte, error) {
-	out, _ := exec.Command("lsof", args...).Output()
+	out, err := exec.Command("lsof", args...).Output()
 
-	return out, nil
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == lsofNoOpeners {
+		return out, nil
+	}
+
+	return out, err
 }
 
 // Holders lists who holds which lock, sorted by pid then id. Dotfiles (a

@@ -5,6 +5,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,8 +24,10 @@ const (
 	usageURL  = "https://api.anthropic.com/api/oauth/usage"
 	oauthBeta = "oauth-2025-04-20"
 
-	// Claude Code stores its OAuth credentials in the login keychain.
-	keychainService = "Claude Code-credentials"
+	// Claude Code stores its OAuth credentials in the login keychain; the
+	// security CLI exits with this status when the item does not exist.
+	keychainService      = "Claude Code-credentials"
+	keychainItemNotFound = 44
 
 	fetchTimeout = 5 * time.Second
 
@@ -258,6 +261,15 @@ func keychainToken(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx,
 		"security", "find-generic-password", "-s", keychainService, "-w",
 	).Output()
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == keychainItemNotFound {
+		// No item at all: Claude Code was never logged in on this Mac (or
+		// logged out). Only the user can fix that, so it is a login problem
+		// rather than a failure to retry every minute.
+		return "", fmt.Errorf("%w: keychain item %q not found", plancache.ErrLogin, keychainService)
+	}
+
 	if err != nil {
 		return "", fmt.Errorf("read keychain item %q: %w", keychainService, err)
 	}
@@ -274,7 +286,7 @@ func keychainToken(ctx context.Context) (string, error) {
 	}
 
 	if creds.ClaudeAiOauth.AccessToken == "" {
-		return "", fmt.Errorf("keychain item %q has no access token", keychainService)
+		return "", fmt.Errorf("%w: keychain item %q has no access token", plancache.ErrLogin, keychainService)
 	}
 
 	if tokenExpired(creds.ClaudeAiOauth.ExpiresAt, time.Now()) {

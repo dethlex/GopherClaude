@@ -1,6 +1,7 @@
 package lockfs
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -135,6 +136,46 @@ func TestRegistryCachesAndRefreshes(t *testing.T) {
 
 	if lsofCalls != 2 || buildCalls != 2 {
 		t.Errorf("after TTL: lsof=%d build=%d, want 2/2", lsofCalls, buildCalls)
+	}
+}
+
+// An lsof failure (binary missing, bad arguments) surfaces as an error while
+// the last good list keeps serving; it must not read as "no sessions".
+func TestRegistryKeepsLastListOnLsofFailure(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	fail := false
+
+	r := NewRegistry("/x", time.Second, func(_ *Lister, holders []Holder) ([]domain.Session, error) {
+		sessions := make([]domain.Session, 0, len(holders))
+		for _, h := range holders {
+			sessions = append(sessions, domain.Session{ID: h.ID, PID: h.PID})
+		}
+
+		return sessions, nil
+	})
+	r.Now = func() time.Time { return now }
+	r.Run = func(...string) ([]byte, error) {
+		if fail {
+			return nil, errors.New("lsof: command not found")
+		}
+
+		return []byte(lsofLocks), nil
+	}
+
+	if sessions, err := r.Sessions(); err != nil || len(sessions) != 3 {
+		t.Fatalf("Sessions = %v, %v", sessions, err)
+	}
+
+	fail = true
+	now = now.Add(2 * time.Second)
+
+	sessions, err := r.Sessions()
+	if err == nil {
+		t.Fatal("Sessions after an lsof failure = nil error, want one")
+	}
+
+	if len(sessions) != 3 {
+		t.Errorf("Sessions after an lsof failure = %v, want the last good list", sessions)
 	}
 }
 

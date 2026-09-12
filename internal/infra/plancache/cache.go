@@ -50,6 +50,11 @@ type Cache struct {
 	hasValue   bool
 	inflight   bool
 	lastWarned string
+
+	// fetchMu serialises Fetch calls: a direct Refresh may overlap a
+	// Plan-spawned one, and fetchers keep state of their own (tokens, the
+	// forecast history) that is not safe for two goroutines.
+	fetchMu sync.Mutex
 }
 
 var _ domain.PlanSource = (*Cache)(nil)
@@ -84,7 +89,9 @@ func (c *Cache) Plan(now time.Time) domain.PlanUsage {
 // background, tests call it directly. The network work runs without the
 // lock so Plan stays instant meanwhile.
 func (c *Cache) Refresh(now time.Time) {
+	c.fetchMu.Lock()
 	plan, err := c.fetcher.Fetch(context.Background(), now)
+	c.fetchMu.Unlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
