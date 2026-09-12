@@ -1,10 +1,12 @@
 package codexfs
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -186,5 +188,154 @@ func TestSessionRegistryEmptyWhenNothingHeld(t *testing.T) {
 
 	if len(sessions) != 0 {
 		t.Errorf("sessions = %+v, want none", sessions)
+	}
+}
+
+func eventLine(ts, typ, extra string) string {
+	if extra != "" {
+		extra = "," + extra
+	}
+
+	return `{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"` + typ + `"` + extra + `}}`
+}
+
+func userLine(ts, text string) string {
+	return `{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"message","role":"user",` +
+		`"content":[{"type":"input_text","text":` + strconv.Quote(text) + `}]}}`
+}
+
+// tokenCountExtra is the payload of a real token_count event minus the type.
+const tokenCountExtra = `"info":{"total_token_usage":{"input_tokens":2656639,"total_tokens":2674845},` +
+	`"last_token_usage":{"input_tokens":152120,"cached_input_tokens":151168,"output_tokens":1537,"total_tokens":153657},` +
+	`"model_context_window":258400},"rate_limits":{"limit_id":"codex","primary":{"used_percent":17.0,"window_minutes":10080,"resets_at":1789472541},"secondary":null,"plan_type":"team"}`
+
+func TestRolloutDirInspect(t *testing.T) {
+	sessionsDir := t.TempDir()
+	meta := metaLine("2026-09-12T09:00:00.000Z", "id", "/Users/x/p", `"cli"`)
+
+	tests := []struct {
+		name    string
+		lines   []string
+		want    domain.Phase
+		wantCtx uint64
+	}{
+		{
+			name: "turn running",
+			lines: []string{meta,
+				eventLine("2026-09-12T09:01:00.000Z", "task_complete", ""),
+				userLine("2026-09-12T09:02:00.000Z", "next"),
+				eventLine("2026-09-12T09:02:01.000Z", "task_started", ""),
+				eventLine("2026-09-12T09:02:05.000Z", "token_count", tokenCountExtra),
+			},
+			want:    domain.PhaseWorking,
+			wantCtx: 153657,
+		},
+		{
+			name: "turn over",
+			lines: []string{meta,
+				eventLine("2026-09-12T09:01:00.000Z", "task_started", ""),
+				eventLine("2026-09-12T09:01:05.000Z", "token_count", tokenCountExtra),
+				eventLine("2026-09-12T09:01:06.000Z", "task_complete", ""),
+			},
+			want:    domain.PhaseWaitingInput,
+			wantCtx: 153657,
+		},
+		{
+			name: "interrupted",
+			lines: []string{meta,
+				eventLine("2026-09-12T09:01:00.000Z", "task_started", ""),
+				eventLine("2026-09-12T09:01:06.000Z", "turn_aborted", ""),
+			},
+			want: domain.PhaseWaitingInput,
+		},
+		{
+			name:  "never ran",
+			lines: []string{meta},
+			want:  domain.PhaseWaitingInput,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := fmt.Sprintf("0199cccc-0000-4000-8000-%012d", i)
+			writeRollout(t, sessionsDir, "2026-09-12", id, tt.lines...)
+
+			got, ctx, err := NewRolloutDir(sessionsDir).Inspect(domain.Session{ID: id})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got != tt.want || ctx != tt.wantCtx {
+				t.Errorf("Inspect = %v/%d, want %v/%d", got, ctx, tt.want, tt.wantCtx)
+			}
+		})
+	}
+}
+
+func TestRolloutDirInspectMissingRollout(t *testing.T) {
+	got, ctx, err := NewRolloutDir(t.TempDir()).Inspect(domain.Session{ID: threadNoFile})
+	if err != nil || got != domain.PhaseWaitingInput || ctx != 0 {
+		t.Errorf("Inspect(missing) = %v/%d/%v, want waiting input, 0, nil", got, ctx, err)
+	}
+}
+
+func TestPromptCounterCountsTodaysUserMessages(t *testing.T) {
+	sessionsDir := t.TempDir()
+	now := time.Date(2026, 9, 12, 15, 0, 0, 0, time.UTC)
+
+	// Started yesterday, used today: lives under yesterday's date.
+	old := writeRollout(t, sessionsDir, "2026-09-11", threadDesktop,
+		metaLine("2026-09-11T20:00:00.000Z", threadDesktop, "/Users/x/a", `"cli"`),
+		userLine("2026-09-11T20:00:01.000Z", "yesterday's prompt"),
+		userLine("2026-09-12T08:00:00.000Z", "<environment_context>injected</environment_context>"),
+		userLine("2026-09-12T08:00:01.000Z", "today one"),
+		eventLine("2026-09-12T08:00:02.000Z", "task_started", ""),
+	)
+	fresh := writeRollout(t, sessionsDir, "2026-09-12", threadTerminal,
+		metaLine("2026-09-12T10:00:00.000Z", threadTerminal, "/Users/x/b", `"cli"`),
+		userLine("2026-09-12T10:00:01.000Z", "today two"),
+		userLine("2026-09-12T10:05:00.000Z", "today three"),
+	)
+	// Untouched since yesterday: never opened at all.
+	stale := writeRollout(t, sessionsDir, "2026-09-10", threadReview,
+		metaLine("2026-09-10T10:00:00.000Z", threadReview, "/Users/x/c", `"cli"`),
+		userLine("2026-09-12T10:00:01.000Z", "would count if the file were read"),
+	)
+
+	for path, mtime := range map[string]time.Time{old: now, fresh: now, stale: now.Add(-30 * time.Hour)} {
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := NewPromptCounter(sessionsDir, time.UTC, discardLogger())
+
+	if got := c.PromptsToday(now); got != 3 {
+		t.Errorf("PromptsToday = %d, want 3", got)
+	}
+
+	// A new prompt lands; within the TTL the cached count is still served.
+	later := writeRollout(t, sessionsDir, "2026-09-12", threadNoFile,
+		metaLine("2026-09-12T11:00:00.000Z", threadNoFile, "/Users/x/d", `"cli"`),
+		userLine("2026-09-12T11:00:01.000Z", "later"))
+
+	if err := os.Chtimes(later, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := c.PromptsToday(now.Add(10 * time.Second)); got != 3 {
+		t.Errorf("PromptsToday within TTL = %d, want cached 3", got)
+	}
+
+	if got := c.PromptsToday(now.Add(promptsTTL + time.Second)); got != 4 {
+		t.Errorf("PromptsToday after TTL = %d, want 4", got)
+	}
+}
+
+func TestPromptCounterMissingDir(t *testing.T) {
+	c := NewPromptCounter(filepath.Join(t.TempDir(), "absent"), time.UTC, discardLogger())
+
+	if got := c.PromptsToday(time.Now()); got != 0 {
+		t.Errorf("PromptsToday(missing dir) = %d, want 0", got)
 	}
 }
