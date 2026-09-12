@@ -17,10 +17,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/plancache"
 )
 
 const (
@@ -40,13 +40,11 @@ const (
 	// A cold fetch scans the agy binary for credentials, refreshes the
 	// token and makes two API calls; it runs off the snapshot loop, so the
 	// budget can be generous. Individual requests get requestTimeout.
-	fetchTimeout     = 20 * time.Second
-	requestTimeout   = 8 * time.Second
-	cacheTTL         = 60 * time.Second
-	rateLimitBackoff = 5 * time.Minute
-	expirySkew       = 60 * time.Second
-	maxBodyBytes     = 1 << 20
-	percentMax       = 100
+	fetchTimeout   = 20 * time.Second
+	requestTimeout = 8 * time.Second
+	expirySkew     = 60 * time.Second
+	maxBodyBytes   = 1 << 20
+	percentMax     = 100
 
 	// Buckets in the quota response are grouped per model family; the
 	// Gemini group's bucket ids carry this prefix.
@@ -61,8 +59,7 @@ const (
 )
 
 var (
-	errRateLimited = errors.New("rate limited")
-	errNoCreds     = errors.New("no oauth client credentials for agy")
+	errNoCreds = fmt.Errorf("%w: no oauth client credentials for agy", plancache.ErrLogin)
 
 	clientIDRe     = regexp.MustCompile(`[0-9]{6,}-[a-z0-9]+\.apps\.googleusercontent\.com`)
 	clientSecretRe = regexp.MustCompile(`GOCSPX-[A-Za-z0-9_-]{28}`)
@@ -85,6 +82,8 @@ type tokenFile struct {
 // the environment). Google refresh tokens do not rotate, so this cannot log
 // agy out; the fresh access token is kept in memory only.
 type QuotaFetcher struct {
+	*plancache.Cache
+
 	tokenPath string
 	agyBinary string
 	client    *http.Client
@@ -93,12 +92,6 @@ type QuotaFetcher struct {
 	apiBase       string
 	tokenEndpoint string
 	readCreds     func() (ids, secrets []string, err error)
-
-	mu        sync.Mutex
-	cached    domain.PlanUsage
-	nextFetch time.Time
-	hasValue  bool
-	inflight  bool
 
 	// Owned by the single in-flight update goroutine; Plan never reads them.
 	accessToken string
@@ -120,68 +113,13 @@ func NewQuotaFetcher(tokenPath, agyBinary string, logger *slog.Logger) *QuotaFet
 		tokenEndpoint: tokenEndpoint,
 	}
 	f.readCreds = f.credsFromEnvOrBinary
+	f.Cache = plancache.New("agy", f, f.logger)
 
 	return f
 }
 
-// Plan returns the cached quota and, when it is due, refreshes it in the
-// background: a cold fetch can take seconds and the caller sends a frame
-// every two seconds.
-func (f *QuotaFetcher) Plan(now time.Time) domain.PlanUsage {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	due := !f.hasValue || !now.Before(f.nextFetch)
-	if due && !f.inflight {
-		f.inflight = true
-
-		go f.update(now)
-	}
-
-	if !f.hasValue {
-		return domain.UnknownPlanUsage()
-	}
-
-	return f.cached
-}
-
-// update fetches synchronously and stores the outcome. The network work runs
-// without the lock so Plan stays instant meanwhile.
-func (f *QuotaFetcher) update(now time.Time) {
-	plan, err := f.fetch(now)
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.inflight = false
-	f.nextFetch = now.Add(cacheTTL)
-
-	if err != nil {
-		f.logger.Warn("fetch agy quota", "error", err)
-
-		if errors.Is(err, errRateLimited) {
-			f.nextFetch = now.Add(rateLimitBackoff)
-		}
-
-		if !f.hasValue {
-			f.cached = domain.UnknownPlanUsage()
-			f.hasValue = true
-		}
-
-		return
-	}
-
-	// One line on the first real value: the service runs without debug
-	// logging, and this is the only sign the token/project dance worked.
-	if !f.hasValue || f.cached.FiveHour.Pct == domain.UnknownPct {
-		f.logger.Info("agy quota available", "five_hour_pct", plan.FiveHour.Pct, "weekly_pct", plan.Weekly.Pct)
-	}
-
-	f.cached = plan
-	f.hasValue = true
-}
-
-func (f *QuotaFetcher) fetch(now time.Time) (domain.PlanUsage, error) {
+// Fetch implements plancache.Fetcher: credentials, token, project, quota.
+func (f *QuotaFetcher) Fetch(ctx context.Context, now time.Time) (domain.PlanUsage, error) {
 	// The credential scan reads a ~170MB binary (slowly, under launchd's
 	// background I/O priority); keep it outside the network budget and do
 	// it once. A failure only matters if the token needs refreshing.
@@ -194,7 +132,7 @@ func (f *QuotaFetcher) fetch(now time.Time) (domain.PlanUsage, error) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
 	token, err := f.token(ctx, now)
@@ -235,12 +173,12 @@ func (f *QuotaFetcher) token(ctx context.Context, now time.Time) (string, error)
 
 	raw, err := os.ReadFile(f.tokenPath)
 	if err != nil {
-		return "", fmt.Errorf("read token file: %w", err)
+		return "", fmt.Errorf("%w: read token file: %w", plancache.ErrLogin, err)
 	}
 
 	var tf tokenFile
 	if err := json.Unmarshal(raw, &tf); err != nil {
-		return "", fmt.Errorf("parse token file: %w", err)
+		return "", fmt.Errorf("%w: parse token file: %w", plancache.ErrLogin, err)
 	}
 
 	if tf.Token.AccessToken != "" && now.Before(tf.Token.Expiry.Add(-expirySkew)) {
@@ -250,7 +188,7 @@ func (f *QuotaFetcher) token(ctx context.Context, now time.Time) (string, error)
 	}
 
 	if tf.Token.RefreshToken == "" {
-		return "", errors.New("token expired and no refresh token in file")
+		return "", fmt.Errorf("%w: token expired and no refresh token in file", plancache.ErrLogin)
 	}
 
 	return f.refresh(ctx, tf.Token.RefreshToken, now)
@@ -368,7 +306,7 @@ func (f *QuotaFetcher) post(ctx context.Context, token, method, body string) ([]
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return nil, fmt.Errorf("%s: %s: %w", method, resp.Status, errRateLimited)
+		return nil, fmt.Errorf("%s: %s: %w", method, resp.Status, plancache.ErrRateLimited)
 	case resp.StatusCode == http.StatusUnauthorized:
 		f.accessToken = "" // force a refresh next time
 

@@ -15,10 +15,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/plancache"
 )
 
 const (
@@ -28,11 +28,9 @@ const (
 	userAgent  = "codex_cli_rs/0.150.1"
 	originator = "codex_cli_rs"
 
-	requestTimeout   = 8 * time.Second
-	cacheTTL         = 60 * time.Second
-	rateLimitBackoff = 5 * time.Minute
-	maxBodyBytes     = 1 << 20
-	percentMax       = 100
+	requestTimeout = 8 * time.Second
+	maxBodyBytes   = 1 << 20
+	percentMax     = 100
 
 	// Windows are told apart by length only: Plus/Pro report a 5-hour
 	// primary and a weekly secondary window, Team a single weekly one.
@@ -43,12 +41,11 @@ const (
 )
 
 var (
-	errRateLimited = errors.New("rate limited")
-	errNoAuthFile  = errors.New("no auth.json: run codex to log in")
-	errBadAuthFile = errors.New("bad auth.json: run codex to log in")
-	errNoToken     = errors.New("auth.json has no ChatGPT tokens (logged in with an API key?)")
-	errExpired     = errors.New("access token expired; run codex once to refresh the login")
-	errRejected    = errors.New("access token rejected (401); run codex once to refresh the login")
+	errNoAuthFile  = fmt.Errorf("%w: no auth.json, run codex to log in", plancache.ErrLogin)
+	errBadAuthFile = fmt.Errorf("%w: unreadable auth.json, run codex to log in", plancache.ErrLogin)
+	errNoToken     = fmt.Errorf("%w: auth.json has no ChatGPT tokens (logged in with an API key?)", plancache.ErrLogin)
+	errExpired     = fmt.Errorf("%w: access token expired, run codex once to refresh the login", plancache.ErrLogin)
+	errRejected    = fmt.Errorf("%w: access token rejected (401), run codex once to refresh the login", plancache.ErrLogin)
 )
 
 // authFile is the part of Codex's auth.json the fetcher reads.
@@ -66,118 +63,32 @@ type authFile struct {
 // refresh from here would invalidate the one Codex holds. An expired or
 // rejected token therefore means "--" on the badge until Codex is run again.
 type UsageFetcher struct {
+	*plancache.Cache
+
 	authPath string
 	client   *http.Client
-	logger   *slog.Logger
 	usageURL string
-
-	mu        sync.Mutex
-	cached    domain.PlanUsage
-	nextFetch time.Time
-	hasValue  bool
-	inflight  bool
-
-	// lastWarned de-duplicates the login warnings: a stale token would
-	// otherwise log every minute.
-	lastWarned string
 }
-
-var _ domain.PlanSource = (*UsageFetcher)(nil)
 
 func NewUsageFetcher(authPath string, logger *slog.Logger) *UsageFetcher {
-	return &UsageFetcher{
+	f := &UsageFetcher{
 		authPath: authPath,
 		client:   &http.Client{Timeout: requestTimeout},
-		logger:   logger.With("module", "codex-quota"),
 		usageURL: usageURL,
 	}
+	f.Cache = plancache.New("codex", f, logger.With("module", "codex-quota"))
+
+	return f
 }
 
-// Plan returns the cached limits and, when they are due, refreshes them in
-// the background: the caller sends a frame every two seconds and must not
-// wait on the network.
-func (f *UsageFetcher) Plan(now time.Time) domain.PlanUsage {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	due := !f.hasValue || !now.Before(f.nextFetch)
-	if due && !f.inflight {
-		f.inflight = true
-
-		go f.update(now)
-	}
-
-	if !f.hasValue {
-		return domain.UnknownPlanUsage()
-	}
-
-	return f.cached
-}
-
-// update fetches synchronously and stores the outcome. The network work runs
-// without the lock so Plan stays instant meanwhile.
-func (f *UsageFetcher) update(now time.Time) {
-	plan, err := f.fetch(now)
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.inflight = false
-	f.nextFetch = now.Add(cacheTTL)
-
-	if err != nil {
-		f.warn(err)
-
-		if errors.Is(err, errRateLimited) {
-			f.nextFetch = now.Add(rateLimitBackoff)
-		}
-
-		// A login problem is not a transient failure: the last value would
-		// go stale unnoticed, so the bars fall back to "--".
-		if !f.hasValue || isLoginError(err) {
-			f.cached = domain.UnknownPlanUsage()
-			f.hasValue = true
-		}
-
-		return
-	}
-
-	// One line on the first real value: the service runs without debug
-	// logging, and this is the only sign the token works.
-	if !f.hasValue || f.cached.Weekly.Pct == domain.UnknownPct {
-		f.logger.Info("codex quota available", "five_hour_pct", plan.FiveHour.Pct, "weekly_pct", plan.Weekly.Pct)
-	}
-
-	f.cached = plan
-	f.hasValue = true
-	f.lastWarned = ""
-}
-
-// warn logs a fetch failure, repeating a login problem only once until it
-// clears.
-func (f *UsageFetcher) warn(err error) {
-	if isLoginError(err) {
-		if f.lastWarned == err.Error() {
-			return
-		}
-
-		f.lastWarned = err.Error()
-	}
-
-	f.logger.Warn("fetch codex quota", "error", err)
-}
-
-func isLoginError(err error) bool {
-	return errors.Is(err, errNoAuthFile) || errors.Is(err, errBadAuthFile) || errors.Is(err, errNoToken) || errors.Is(err, errExpired) || errors.Is(err, errRejected)
-}
-
-func (f *UsageFetcher) fetch(now time.Time) (domain.PlanUsage, error) {
+// Fetch implements plancache.Fetcher: one wham/usage call with the token from auth.json.
+func (f *UsageFetcher) Fetch(ctx context.Context, now time.Time) (domain.PlanUsage, error) {
 	access, account, err := f.credentials(now)
 	if err != nil {
 		return domain.PlanUsage{}, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.usageURL, nil)
@@ -205,7 +116,7 @@ func (f *UsageFetcher) fetch(now time.Time) (domain.PlanUsage, error) {
 	case http.StatusOK:
 		return parseUsage(body)
 	case http.StatusTooManyRequests:
-		return domain.PlanUsage{}, fmt.Errorf("usage: %s: %w", resp.Status, errRateLimited)
+		return domain.PlanUsage{}, fmt.Errorf("usage: %s: %w", resp.Status, plancache.ErrRateLimited)
 	case http.StatusUnauthorized:
 		return domain.PlanUsage{}, errRejected
 	default:
@@ -222,7 +133,7 @@ func (f *UsageFetcher) credentials(now time.Time) (access, account string, err e
 		if errors.Is(err, os.ErrNotExist) {
 			return "", "", fmt.Errorf("%w: %w", errNoAuthFile, err)
 		}
-		return "", "", fmt.Errorf("read auth file: %w", err)
+		return "", "", fmt.Errorf("%w: %w", errBadAuthFile, err)
 	}
 
 	var af authFile

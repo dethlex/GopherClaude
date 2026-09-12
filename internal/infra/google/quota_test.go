@@ -1,6 +1,8 @@
 package google
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/plancache"
 )
 
 // Captured from a real retrieveUserQuotaSummary response.
@@ -135,7 +138,7 @@ func TestQuotaFetcherRefreshesExpiredTokenAndCaches(t *testing.T) {
 		}
 	})
 
-	f.update(now)
+	f.Refresh(now)
 	plan := f.Plan(now)
 	if plan.FiveHour.Pct != 22 {
 		t.Fatalf("Plan = %+v", plan)
@@ -153,7 +156,7 @@ func TestQuotaFetcherRefreshesExpiredTokenAndCaches(t *testing.T) {
 	}
 
 	// Within the token lifetime no further refresh happens.
-	f.update(now.Add(cacheTTL + time.Second))
+	f.Refresh(now.Add(plancache.TTL + time.Second))
 
 	if refreshes != 2 {
 		t.Errorf("refresh calls after TTL = %d, want still 2 (token valid for an hour)", refreshes)
@@ -179,14 +182,14 @@ func TestQuotaFetcherUsesFreshFileToken(t *testing.T) {
 		}
 	})
 
-	f.update(now)
+	f.Refresh(now)
 
 	if plan := f.Plan(now); plan.Weekly.Pct != 18 {
 		t.Errorf("Plan = %+v", plan)
 	}
 }
 
-func TestQuotaFetcherDegradesOnFailure(t *testing.T) {
+func TestFetchClassifiesErrors(t *testing.T) {
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	fresh := `{"token":{"access_token":"disk","refresh_token":"rt","expiry":"` + now.Add(time.Hour).Format(time.RFC3339) + `"}}`
 
@@ -194,28 +197,14 @@ func TestQuotaFetcherDegradesOnFailure(t *testing.T) {
 		http.Error(w, "slow down", http.StatusTooManyRequests)
 	})
 
-	f.update(now)
-	plan := f.Plan(now)
-	if plan.FiveHour.Pct != domain.UnknownPct {
-		t.Errorf("Plan = %+v, want unknown", plan)
+	if _, err := f.Fetch(context.Background(), now); !errors.Is(err, plancache.ErrRateLimited) {
+		t.Errorf("Fetch error = %v, want rate limited", err)
 	}
 
-	if !f.nextFetch.Equal(now.Add(rateLimitBackoff)) {
-		t.Errorf("nextFetch = %v, want rate-limit backoff", f.nextFetch)
-	}
-}
+	// No token file at all: a login problem, warned once by the cache.
+	missing := NewQuotaFetcher(filepath.Join(t.TempDir(), "absent-token"), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-func TestQuotaFetcherPlanNeverBlocks(t *testing.T) {
-	f := NewQuotaFetcher(filepath.Join(t.TempDir(), "missing-token"), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	start := time.Now()
-	plan := f.Plan(start)
-
-	if plan.FiveHour.Pct != domain.UnknownPct {
-		t.Errorf("Plan before the first fetch = %+v, want unknown", plan)
-	}
-
-	if time.Since(start) > time.Second {
-		t.Errorf("Plan blocked for %v; the fetch must run in the background", time.Since(start))
+	if _, err := missing.Fetch(context.Background(), now); !errors.Is(err, plancache.ErrLogin) {
+		t.Errorf("Fetch error without a token file = %v, want a login problem", err)
 	}
 }

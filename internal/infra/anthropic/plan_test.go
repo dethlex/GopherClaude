@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/plancache"
 )
 
 const sampleResponse = `{
@@ -49,7 +50,9 @@ func TestPlanParsesResponse(t *testing.T) {
 		_, _ = w.Write([]byte(sampleResponse))
 	})
 
-	got := f.Plan(time.Now())
+	now := time.Now()
+	f.Refresh(now)
+	got := f.Plan(now)
 
 	if got.FiveHour.Pct != 36 {
 		t.Errorf("FiveHour.Pct = %d, want 36", got.FiveHour.Pct)
@@ -73,69 +76,36 @@ func TestPlanParsesResponse(t *testing.T) {
 	}
 }
 
-func TestPlanCachesWithinTTL(t *testing.T) {
-	calls := 0
+func TestFetchClassifiesErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   error
+	}{
+		{"rate limited", http.StatusTooManyRequests, plancache.ErrRateLimited},
+		{"unauthorized is a login problem", http.StatusUnauthorized, plancache.ErrLogin},
+	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := testFetcher(t, func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "no", tt.status)
+			})
+
+			if _, err := f.Fetch(context.Background(), time.Now()); !errors.Is(err, tt.want) {
+				t.Errorf("Fetch error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+
+	// A token the keychain says has expired never reaches the network.
 	f := testFetcher(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
-
-		_, _ = w.Write([]byte(sampleResponse))
+		t.Error("unexpected request with an expired token")
 	})
+	f.token = func(context.Context) (string, error) { return "", errTokenExpired }
 
-	now := time.Now()
-
-	f.Plan(now)
-	f.Plan(now.Add(10 * time.Second))
-	f.Plan(now.Add(30 * time.Second))
-
-	if calls != 1 {
-		t.Errorf("api calls = %d, want 1 (cached within TTL)", calls)
-	}
-
-	f.Plan(now.Add(cacheTTL + time.Second))
-
-	if calls != 2 {
-		t.Errorf("api calls = %d, want 2 (refreshed after TTL)", calls)
-	}
-}
-
-func TestPlanDegradesOnFailure(t *testing.T) {
-	f := testFetcher(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "nope", http.StatusUnauthorized)
-	})
-
-	got := f.Plan(time.Now())
-
-	if got.FiveHour.Pct != domain.UnknownPct || got.Weekly.Pct != domain.UnknownPct {
-		t.Errorf("Plan() = %+v, want unknown values", got)
-	}
-}
-
-func TestPlanKeepsLastValueOnFailure(t *testing.T) {
-	fail := false
-
-	f := testFetcher(t, func(w http.ResponseWriter, r *http.Request) {
-		if fail {
-			http.Error(w, "nope", http.StatusInternalServerError)
-
-			return
-		}
-
-		_, _ = w.Write([]byte(sampleResponse))
-	})
-
-	now := time.Now()
-
-	first := f.Plan(now)
-	if first.FiveHour.Pct != 36 {
-		t.Fatalf("first Plan() = %+v", first)
-	}
-
-	fail = true
-
-	second := f.Plan(now.Add(cacheTTL + time.Second))
-	if second.FiveHour.Pct != 36 {
-		t.Errorf("after failure Plan() = %+v, want last known value", second)
+	if _, err := f.Fetch(context.Background(), time.Now()); !errors.Is(err, plancache.ErrLogin) {
+		t.Errorf("Fetch error = %v, want a login problem", err)
 	}
 }
 
@@ -152,17 +122,20 @@ func TestPlanForecastsFiveHourETA(t *testing.T) {
 
 	// 40% -> 42% -> 44% over 4 minutes: 1 pct/min, 56% left => 56m ETA,
 	// well before the ~6h reset.
+	f.Refresh(start)
+
 	if got := f.Plan(start); got.FiveHourETA != 0 {
 		t.Errorf("first sample ETA = %v, want 0 (not enough history)", got.FiveHourETA)
 	}
 
 	pct = 42.0
-
-	f.Plan(start.Add(2 * time.Minute))
+	f.Refresh(start.Add(2 * time.Minute))
 
 	pct = 44.0
+	at := start.Add(4 * time.Minute)
+	f.Refresh(at)
 
-	got := f.Plan(start.Add(4 * time.Minute))
+	got := f.Plan(at)
 
 	want := 56 * time.Minute
 	if got.FiveHourETA != want {
@@ -181,13 +154,13 @@ func TestPlanForecastSilentWhenResetComesFirst(t *testing.T) {
 
 	start := time.Date(2026, 6, 11, 18, 0, 0, 0, time.UTC)
 
-	f.Plan(start)
+	f.Refresh(start)
 
 	pct = 11.0 // 0.5 pct/min: would take ~178m, but the reset is in 56m
+	at := start.Add(2 * time.Minute)
+	f.Refresh(at)
 
-	got := f.Plan(start.Add(2 * time.Minute))
-
-	if got.FiveHourETA != 0 {
+	if got := f.Plan(at); got.FiveHourETA != 0 {
 		t.Errorf("ETA = %v, want 0 when the reset arrives first", got.FiveHourETA)
 	}
 }
@@ -203,43 +176,17 @@ func TestPlanForecastResetsHistoryOnDrop(t *testing.T) {
 
 	start := time.Date(2026, 6, 11, 18, 0, 0, 0, time.UTC)
 
-	f.Plan(start)
+	f.Refresh(start)
 
 	pct = 85.0
-
-	f.Plan(start.Add(2 * time.Minute))
+	f.Refresh(start.Add(2 * time.Minute))
 
 	pct = 3.0 // window reset
+	at := start.Add(4 * time.Minute)
+	f.Refresh(at)
 
-	got := f.Plan(start.Add(4 * time.Minute))
-
-	if got.FiveHourETA != 0 {
+	if got := f.Plan(at); got.FiveHourETA != 0 {
 		t.Errorf("ETA = %v, want 0 right after a window reset", got.FiveHourETA)
-	}
-}
-
-func TestPlanBacksOffOnRateLimit(t *testing.T) {
-	calls := 0
-
-	f := testFetcher(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
-
-		http.Error(w, "slow down", http.StatusTooManyRequests)
-	})
-
-	now := time.Now()
-
-	f.Plan(now)
-	f.Plan(now.Add(cacheTTL + time.Second)) // normal TTL: still backing off
-
-	if calls != 1 {
-		t.Errorf("api calls = %d, want 1 (rate-limit backoff)", calls)
-	}
-
-	f.Plan(now.Add(rateLimitBackoff + time.Second))
-
-	if calls != 2 {
-		t.Errorf("api calls = %d, want 2 after the backoff expires", calls)
 	}
 }
 

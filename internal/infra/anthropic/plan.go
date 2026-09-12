@@ -5,7 +5,6 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,10 +13,10 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/plancache"
 )
 
 const (
@@ -28,11 +27,6 @@ const (
 	keychainService = "Claude Code-credentials"
 
 	fetchTimeout = 5 * time.Second
-	cacheTTL     = 60 * time.Second
-
-	// The usage endpoint rate-limits aggressively; after a 429 stay away
-	// noticeably longer than the regular polling interval.
-	rateLimitBackoff = 5 * time.Minute
 
 	centsPerUnit  = 100
 	percentMax    = 100
@@ -51,23 +45,15 @@ const (
 // TokenFunc returns a bearer token for the usage API.
 type TokenFunc func(ctx context.Context) (string, error)
 
-// PlanFetcher polls the usage API lazily: at most once per cacheTTL, from
-// within Plan(). Failures keep the previous value; before the first success
-// every field is UnknownPct.
+// PlanFetcher fetches the usage API; plancache decides when.
 type PlanFetcher struct {
-	client *http.Client
-	token  TokenFunc
-	url    string
-	logger *slog.Logger
+	*plancache.Cache
 
-	mu        sync.Mutex
-	cached    domain.PlanUsage
-	nextFetch time.Time
-	hasValue  bool
-	history   []sample
+	client  *http.Client
+	token   TokenFunc
+	url     string
+	history []sample
 }
-
-var errRateLimited = errors.New("rate limited")
 
 // sample is one observed 5-hour utilization point for the burn-rate forecast.
 type sample struct {
@@ -76,48 +62,14 @@ type sample struct {
 }
 
 func NewPlanFetcher(logger *slog.Logger) *PlanFetcher {
-	return &PlanFetcher{
+	f := &PlanFetcher{
 		client: &http.Client{Timeout: fetchTimeout},
 		token:  keychainToken,
 		url:    usageURL,
-		logger: logger.With("module", "plan"),
 	}
-}
+	f.Cache = plancache.New("claude", f, logger.With("module", "plan"))
 
-func (f *PlanFetcher) Plan(now time.Time) domain.PlanUsage {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.hasValue && now.Before(f.nextFetch) {
-		return f.cached
-	}
-
-	plan, err := f.fetch()
-	if err != nil {
-		f.logger.Warn("fetch plan usage", "error", err)
-
-		// Back off after a failure too, but keep serving the last
-		// known value.
-		f.nextFetch = now.Add(cacheTTL)
-		if errors.Is(err, errRateLimited) {
-			f.nextFetch = now.Add(rateLimitBackoff)
-		}
-
-		if !f.hasValue {
-			f.cached = domain.UnknownPlanUsage()
-			f.hasValue = true
-		}
-
-		return f.cached
-	}
-
-	plan.FiveHourETA = f.forecast(plan, now)
-
-	f.cached = plan
-	f.nextFetch = now.Add(cacheTTL)
-	f.hasValue = true
-
-	return f.cached
+	return f
 }
 
 // forecast tracks 5-hour utilization samples and extrapolates when the limit
@@ -184,8 +136,10 @@ type (
 	}
 )
 
-func (f *PlanFetcher) fetch() (domain.PlanUsage, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+// Fetch implements plancache.Fetcher: one usage-API call plus the burn-rate
+// forecast over the samples this fetcher has seen.
+func (f *PlanFetcher) Fetch(ctx context.Context, now time.Time) (domain.PlanUsage, error) {
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
 	token, err := f.token(ctx)
@@ -207,11 +161,14 @@ func (f *PlanFetcher) fetch() (domain.PlanUsage, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return domain.PlanUsage{}, fmt.Errorf("usage api status %s: %w", resp.Status, errRateLimited)
-	}
-
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusTooManyRequests:
+		return domain.PlanUsage{}, fmt.Errorf("usage api status %s: %w", resp.Status, plancache.ErrRateLimited)
+	case http.StatusUnauthorized:
+		// The Keychain token expired; Claude Code refreshes it on its next run.
+		return domain.PlanUsage{}, fmt.Errorf("usage api status %s: %w", resp.Status, plancache.ErrLogin)
+	default:
 		return domain.PlanUsage{}, fmt.Errorf("usage api status %s", resp.Status)
 	}
 
@@ -225,7 +182,10 @@ func (f *PlanFetcher) fetch() (domain.PlanUsage, error) {
 		return domain.PlanUsage{}, fmt.Errorf("decode body: %w", err)
 	}
 
-	return toPlanUsage(parsed), nil
+	plan := toPlanUsage(parsed)
+	plan.FiveHourETA = f.forecast(plan, now)
+
+	return plan, nil
 }
 
 func toPlanUsage(r usageResponse) domain.PlanUsage {
@@ -279,7 +239,7 @@ func formatCredits(cents float64) string {
 	return s
 }
 
-var errTokenExpired = errors.New("oauth token expired; waiting for Claude Code to refresh it")
+var errTokenExpired = fmt.Errorf("%w: oauth token expired; waiting for Claude Code to refresh it", plancache.ErrLogin)
 
 // expirySkew treats a token as expired slightly early so it is not used right
 // as it lapses mid-request.

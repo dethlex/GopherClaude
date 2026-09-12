@@ -2,8 +2,10 @@ package openai
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/plancache"
 )
 
 // Captured from a real wham/usage response (Team plan: one weekly window).
@@ -27,6 +30,8 @@ const teamFixture = `{"plan_type":"team","rate_limit":{"allowed":true,"limit_rea
 const plusFixture = `{"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,` +
 	`"primary_window":{"used_percent":44.4,"limit_window_seconds":18000,"reset_after_seconds":11000,"reset_at":1789300000},` +
 	`"secondary_window":{"used_percent":90.2,"limit_window_seconds":604800,"reset_after_seconds":300000,"reset_at":1789600000}}}`
+
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestParseUsageTeam(t *testing.T) {
 	plan, err := parseUsage([]byte(teamFixture))
@@ -78,7 +83,7 @@ func authJSON(access string) string {
 		`","account_id":"acct-1","id_token":"x","refresh_token":"rt"}}`
 }
 
-func testFetcher(t *testing.T, auth string, handler http.HandlerFunc) (*UsageFetcher, string) {
+func testFetcher(t *testing.T, auth string, logger *slog.Logger, handler http.HandlerFunc) (*UsageFetcher, string) {
 	t.Helper()
 
 	authPath := filepath.Join(t.TempDir(), "auth.json")
@@ -89,7 +94,7 @@ func testFetcher(t *testing.T, auth string, handler http.HandlerFunc) (*UsageFet
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	f := NewUsageFetcher(authPath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	f := NewUsageFetcher(authPath, logger)
 	f.client = srv.Client()
 	f.usageURL = srv.URL + "/wham/usage"
 
@@ -102,7 +107,7 @@ func TestUsageFetcherFetchesAndCaches(t *testing.T) {
 
 	var calls int32
 
-	f, authPath := testFetcher(t, authJSON(token), func(w http.ResponseWriter, r *http.Request) {
+	f, authPath := testFetcher(t, authJSON(token), discardLogger(), func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
 
 		if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("ChatGPT-Account-Id") != "acct-1" ||
@@ -117,7 +122,7 @@ func TestUsageFetcherFetchesAndCaches(t *testing.T) {
 
 	before, _ := os.ReadFile(authPath)
 
-	f.update(now)
+	f.Refresh(now)
 
 	if plan := f.Plan(now); plan.Weekly.Pct != 17 {
 		t.Fatalf("Plan = %+v", plan)
@@ -140,7 +145,7 @@ func TestUsageFetcherPicksUpRewrittenAuthFile(t *testing.T) {
 	first := jwt(now.Add(24 * time.Hour))
 	second := jwt(now.Add(10 * 24 * time.Hour))
 
-	f, authPath := testFetcher(t, authJSON(first), func(w http.ResponseWriter, r *http.Request) {
+	f, authPath := testFetcher(t, authJSON(first), discardLogger(), func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "Bearer "+second {
 			_, _ = w.Write([]byte(plusFixture))
 
@@ -150,78 +155,70 @@ func TestUsageFetcherPicksUpRewrittenAuthFile(t *testing.T) {
 		_, _ = w.Write([]byte(teamFixture))
 	})
 
-	f.update(now)
+	f.Refresh(now)
 
 	if plan := f.Plan(now); plan.FiveHour.Pct != domain.UnknownPct {
 		t.Fatalf("Plan with the first token = %+v, want the team fixture", plan)
 	}
 
-	// Codex refreshed its login: the next update must use the new token.
+	// Codex refreshed its login: the next fetch must use the new token.
 	if err := os.WriteFile(authPath, []byte(authJSON(second)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	f.update(now.Add(cacheTTL + time.Second))
+	later := now.Add(plancache.TTL + time.Second)
+	f.Refresh(later)
 
-	if plan := f.Plan(now.Add(cacheTTL + time.Second)); plan.FiveHour.Pct != 44 {
+	if plan := f.Plan(later); plan.FiveHour.Pct != 44 {
 		t.Errorf("Plan with the rewritten file = %+v, want the plus fixture", plan)
 	}
 }
 
-func TestUsageFetcherLoginProblems(t *testing.T) {
+func TestFetchClassifiesErrors(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
 		name      string
 		auth      string
 		status    int
+		want      error
 		wantCalls int32
 	}{
-		{"api key login", `{"OPENAI_API_KEY":"sk-x","last_refresh":null}`, http.StatusOK, 0},
-		{"expired token", authJSON(jwt(now.Add(-time.Hour))), http.StatusOK, 0},
-		{"rejected token", authJSON(jwt(now.Add(time.Hour))), http.StatusUnauthorized, 1},
+		{"api key login", `{"OPENAI_API_KEY":"sk-x","last_refresh":null}`, http.StatusOK, plancache.ErrLogin, 0},
+		{"expired token", authJSON(jwt(now.Add(-time.Hour))), http.StatusOK, plancache.ErrLogin, 0},
+		{"rejected token", authJSON(jwt(now.Add(time.Hour))), http.StatusUnauthorized, plancache.ErrLogin, 1},
+		{"rate limited", authJSON(jwt(now.Add(time.Hour))), http.StatusTooManyRequests, plancache.ErrRateLimited, 1},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls int32
 
-			f, _ := testFetcher(t, tt.auth, func(w http.ResponseWriter, r *http.Request) {
+			f, _ := testFetcher(t, tt.auth, discardLogger(), func(w http.ResponseWriter, r *http.Request) {
 				atomic.AddInt32(&calls, 1)
 				http.Error(w, "no", tt.status)
 			})
 
-			f.update(now)
-
-			if plan := f.Plan(now); plan.Weekly.Pct != domain.UnknownPct {
-				t.Errorf("Plan = %+v, want unknown", plan)
+			if _, err := f.Fetch(context.Background(), now); !errors.Is(err, tt.want) {
+				t.Errorf("Fetch error = %v, want %v", err, tt.want)
 			}
 
 			if atomic.LoadInt32(&calls) != tt.wantCalls {
 				t.Errorf("usage calls = %d, want %d", calls, tt.wantCalls)
 			}
-
-			// The next attempt waits for the regular TTL: the file may have
-			// been refreshed by Codex meanwhile, and there is nothing to
-			// back off from.
-			if !f.nextFetch.Equal(now.Add(cacheTTL)) {
-				t.Errorf("nextFetch = %v, want now+TTL", f.nextFetch)
-			}
 		})
 	}
-}
 
-func TestUsageFetcherRateLimitBackoff(t *testing.T) {
-	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	// A missing or unreadable auth.json is a login problem too (codex logout
+	// removes the file), not a transient failure to retry noisily.
+	missing := NewUsageFetcher(filepath.Join(t.TempDir(), "absent.json"), discardLogger())
+	if _, err := missing.Fetch(context.Background(), now); !errors.Is(err, plancache.ErrLogin) {
+		t.Errorf("Fetch without auth.json = %v, want a login problem", err)
+	}
 
-	f, _ := testFetcher(t, authJSON(jwt(now.Add(time.Hour))), func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "slow down", http.StatusTooManyRequests)
-	})
-
-	f.update(now)
-
-	if !f.nextFetch.Equal(now.Add(rateLimitBackoff)) {
-		t.Errorf("nextFetch = %v, want rate-limit backoff", f.nextFetch)
+	broken, _ := testFetcher(t, "{not json", discardLogger(), func(http.ResponseWriter, *http.Request) {})
+	if _, err := broken.Fetch(context.Background(), now); !errors.Is(err, plancache.ErrLogin) {
+		t.Errorf("Fetch with a corrupt auth.json = %v, want a login problem", err)
 	}
 }
 
@@ -229,7 +226,7 @@ func TestUsageFetcherRejectedTokenDropsStaleValue(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	status := int32(http.StatusOK)
 
-	f, _ := testFetcher(t, authJSON(jwt(now.Add(time.Hour))), func(w http.ResponseWriter, r *http.Request) {
+	f, _ := testFetcher(t, authJSON(jwt(now.Add(time.Hour))), discardLogger(), func(w http.ResponseWriter, r *http.Request) {
 		if s := atomic.LoadInt32(&status); s != http.StatusOK {
 			http.Error(w, "no", int(s))
 
@@ -239,27 +236,14 @@ func TestUsageFetcherRejectedTokenDropsStaleValue(t *testing.T) {
 		_, _ = w.Write([]byte(teamFixture))
 	})
 
-	f.update(now)
+	f.Refresh(now)
 	atomic.StoreInt32(&status, http.StatusUnauthorized)
-	f.update(now.Add(cacheTTL + time.Second))
 
-	if plan := f.Plan(now.Add(cacheTTL + time.Second)); plan.Weekly.Pct != domain.UnknownPct {
+	later := now.Add(plancache.TTL + time.Second)
+	f.Refresh(later)
+
+	if plan := f.Plan(later); plan.Weekly.Pct != domain.UnknownPct {
 		t.Errorf("Plan after 401 = %+v, want unknown rather than the stale 17%%", plan)
-	}
-}
-
-func TestUsageFetcherPlanNeverBlocks(t *testing.T) {
-	f := NewUsageFetcher(filepath.Join(t.TempDir(), "missing-auth.json"), slog.New(slog.NewTextHandler(io.Discard, nil)))
-
-	start := time.Now()
-	plan := f.Plan(start)
-
-	if plan.FiveHour.Pct != domain.UnknownPct {
-		t.Errorf("Plan before the first fetch = %+v, want unknown", plan)
-	}
-
-	if time.Since(start) > time.Second {
-		t.Errorf("Plan blocked for %v; the fetch must run in the background", time.Since(start))
 	}
 }
 
@@ -276,8 +260,9 @@ func TestUsageFetcherNeverLogsSecrets(t *testing.T) {
 	)
 
 	body.Store(teamFixture)
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
 
-	f, _ := testFetcher(t, authJSON(token), func(w http.ResponseWriter, r *http.Request) {
+	f, _ := testFetcher(t, authJSON(token), logger, func(w http.ResponseWriter, r *http.Request) {
 		if s := atomic.LoadInt32(&status); s != http.StatusOK {
 			http.Error(w, "no", int(s))
 
@@ -286,18 +271,17 @@ func TestUsageFetcherNeverLogsSecrets(t *testing.T) {
 
 		_, _ = w.Write([]byte(body.Load().(string)))
 	})
-	f.logger = slog.New(slog.NewTextHandler(&logs, nil))
 
-	f.update(now) // success
+	f.Refresh(now) // success
 	body.Store("not json")
-	f.update(now) // malformed body
+	f.Refresh(now) // malformed body
 	atomic.StoreInt32(&status, http.StatusUnauthorized)
-	f.update(now) // rejected token
+	f.Refresh(now) // rejected token
 	atomic.StoreInt32(&status, http.StatusTooManyRequests)
-	f.update(now) // rate limited
+	f.Refresh(now) // rate limited
 
-	missing := NewUsageFetcher(filepath.Join(t.TempDir(), "absent.json"), slog.New(slog.NewTextHandler(&logs, nil)))
-	missing.update(now)
+	missing := NewUsageFetcher(filepath.Join(t.TempDir(), "absent.json"), logger)
+	missing.Refresh(now)
 
 	out := logs.String()
 	if out == "" {
@@ -318,11 +302,11 @@ func TestUsageFetcherMissingAuthFileWarnsOnce(t *testing.T) {
 
 	f := NewUsageFetcher(filepath.Join(t.TempDir(), "absent.json"), slog.New(slog.NewTextHandler(&logs, nil)))
 
-	f.update(now)
-	f.update(now.Add(cacheTTL + time.Second))
-	f.update(now.Add(2*cacheTTL + 2*time.Second))
+	f.Refresh(now)
+	f.Refresh(now.Add(plancache.TTL + time.Second))
+	f.Refresh(now.Add(2*plancache.TTL + 2*time.Second))
 
-	if got := strings.Count(logs.String(), "fetch codex quota"); got != 1 {
+	if got := strings.Count(logs.String(), "fetch plan limits"); got != 1 {
 		t.Errorf("warnings = %d, want 1:\n%s", got, logs.String())
 	}
 
