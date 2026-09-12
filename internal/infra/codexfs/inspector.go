@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/jsonl"
 )
 
 // RolloutDir is the phase heuristic for Codex threads that have no hook
@@ -36,7 +37,7 @@ func (d *RolloutDir) Inspect(session domain.Session) (domain.Phase, uint64, erro
 		return domain.PhaseWaitingInput, 0, nil
 	}
 
-	tail, err := readTail(path, tailReadSize)
+	tail, err := jsonl.Tail(path, tailReadSize)
 	if err != nil {
 		return domain.PhaseWaitingInput, 0, fmt.Errorf("read rollout %q: %w", path, err)
 	}

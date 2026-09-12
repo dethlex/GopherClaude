@@ -1,19 +1,15 @@
 package codexfs
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/jsonl"
 )
 
 const (
@@ -30,8 +26,8 @@ const (
 // bytes Codex added since the last one; a Desktop thread's transcript runs to
 // 100 MB, and re-reading it every minute would stall the frame loop.
 type rolloutCursor struct {
-	offset int64
-	count  int
+	cur   jsonl.Cursor
+	count int
 }
 
 // PromptCounter counts today's prompts across all rollouts: Codex no longer
@@ -104,15 +100,17 @@ func (c *PromptCounter) count(midnight time.Time, day string) int {
 			c.files[path] = cur
 		}
 
-		if info.Size() < cur.offset {
-			cur.offset = 0
-			cur.count = 0
+		onLine := func(line []byte) {
+			if isPromptOn(line, day, c.loc) {
+				cur.count++
+			}
 		}
 
-		if info.Size() > cur.offset {
-			if err := countUserMessages(path, day, c.loc, cur); err != nil {
-				c.logger.Debug("count prompts", "file", path, "error", err)
-			}
+		// A rewritten file starts its count over.
+		onReset := func() { cur.count = 0 }
+
+		if err := cur.cur.ReadNew(path, onLine, onReset); err != nil {
+			c.logger.Debug("count prompts", "file", path, "error", err)
 		}
 
 		return nil
@@ -128,43 +126,6 @@ func (c *PromptCounter) count(midnight time.Time, day string) int {
 	}
 
 	return total
-}
-
-// countUserMessages reads appended lines from the cursor offset, counting
-// complete user prompts sent on the given day and advancing the cursor only
-// past complete lines.
-func countUserMessages(path, day string, loc *time.Location, cur *rolloutCursor) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if cur.offset > 0 {
-		if _, err := f.Seek(cur.offset, io.SeekStart); err != nil {
-			return err
-		}
-	}
-
-	reader := bufio.NewReader(f)
-
-	for {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 && line[len(line)-1] == '\n' {
-			cur.offset += int64(len(line))
-			if len(bytes.TrimSpace(line)) > 0 && isPromptOn(line, day, loc) {
-				cur.count++
-			}
-		}
-
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-
-			return err
-		}
-	}
 }
 
 // isPromptOn reports whether the line is a user prompt sent on the given day.

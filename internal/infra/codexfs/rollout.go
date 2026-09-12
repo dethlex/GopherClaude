@@ -147,28 +147,3 @@ func readMeta(path string) (sessionMeta, error) {
 func parseTimestamp(s string) (time.Time, error) {
 	return time.Parse(timestampLayout, s)
 }
-
-// readTail returns up to maxBytes from the end of the file.
-func readTail(path string, maxBytes int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-
-	offset := info.Size() - maxBytes
-	if offset < 0 {
-		offset = 0
-	}
-
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	return io.ReadAll(f)
-}

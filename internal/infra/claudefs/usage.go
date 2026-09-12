@@ -1,12 +1,10 @@
 package claudefs
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -15,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/jsonl"
 )
 
 const (
@@ -36,7 +35,7 @@ type UsageCollector struct {
 	logger      *slog.Logger
 
 	day     string
-	offsets map[string]int64
+	cursors map[string]*jsonl.Cursor
 	seenIDs map[string]struct{}
 	totals  domain.Usage
 }
@@ -46,7 +45,7 @@ func NewUsageCollector(projectsDir string, loc *time.Location, logger *slog.Logg
 		projectsDir: projectsDir,
 		loc:         loc,
 		logger:      logger.With("module", "usage"),
-		offsets:     make(map[string]int64),
+		cursors:     make(map[string]*jsonl.Cursor),
 		seenIDs:     make(map[string]struct{}),
 	}
 }
@@ -91,7 +90,7 @@ func (c *UsageCollector) TodayUsage(now time.Time) (domain.Usage, error) {
 			return nil
 		}
 
-		if readErr := c.readTail(path, info.Size()); readErr != nil {
+		if readErr := c.readTail(path); readErr != nil {
 			c.logger.Warn("read transcript tail", "path", path, "error", readErr)
 		}
 
@@ -106,56 +105,22 @@ func (c *UsageCollector) TodayUsage(now time.Time) (domain.Usage, error) {
 
 func (c *UsageCollector) reset(day string) {
 	c.day = day
-	c.offsets = make(map[string]int64)
+	c.cursors = make(map[string]*jsonl.Cursor)
 	c.seenIDs = make(map[string]struct{})
 	c.totals = domain.Usage{}
 }
 
-// readTail parses complete lines appended to the file since the last call and
-// advances the stored offset. A trailing partial line (still being written by
-// Claude Code) is left for the next call.
-func (c *UsageCollector) readTail(path string, size int64) error {
-	offset := c.offsets[path]
-	if size < offset {
-		// The file was truncated or replaced; reread it. The message.id
-		// dedup set protects against double counting.
-		offset = 0
+// readTail parses the lines appended to the transcript since the last call.
+// A rewritten file is simply read again: the message.id dedup set protects
+// against double counting.
+func (c *UsageCollector) readTail(path string) error {
+	cur, ok := c.cursors[path]
+	if !ok {
+		cur = &jsonl.Cursor{}
+		c.cursors[path] = cur
 	}
 
-	if size == offset {
-		return nil
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return fmt.Errorf("seek to %d: %w", offset, err)
-	}
-
-	reader := bufio.NewReaderSize(f, 256*1024)
-
-	for {
-		line, err := reader.ReadBytes('\n')
-		if errors.Is(err, io.EOF) {
-			break // partial line: re-read next tick
-		}
-
-		if err != nil {
-			return fmt.Errorf("read line: %w", err)
-		}
-
-		offset += int64(len(line))
-
-		c.consumeLine(line)
-	}
-
-	c.offsets[path] = offset
-
-	return nil
+	return cur.ReadNew(path, c.consumeLine, nil)
 }
 
 func (c *UsageCollector) consumeLine(line []byte) {

@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
+	"github.com/dethlex/GopherClaude/internal/infra/jsonl"
 )
 
 const (
@@ -57,7 +56,7 @@ type tailEntry struct {
 func (t *TranscriptDir) Inspect(session domain.Session) (domain.Phase, uint64, error) {
 	path := filepath.Join(t.dir, sanitizeProjectDir(session.Dir), session.ID+transcriptExt)
 
-	tail, err := readFileTail(path, tailReadSize)
+	tail, err := jsonl.Tail(path, tailReadSize)
 	if err != nil {
 		return domain.PhaseWorking, 0, fmt.Errorf("read transcript %q: %w", path, err)
 	}
@@ -128,29 +127,4 @@ func sanitizeProjectDir(cwd string) string {
 			return '-'
 		}
 	}, cwd)
-}
-
-// readFileTail returns up to maxBytes from the end of the file.
-func readFileTail(path string, maxBytes int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-
-	offset := info.Size() - maxBytes
-	if offset < 0 {
-		offset = 0
-	}
-
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	return io.ReadAll(f)
 }

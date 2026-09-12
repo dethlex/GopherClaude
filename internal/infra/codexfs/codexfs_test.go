@@ -395,7 +395,7 @@ func TestPromptCounterReadsIncrementally(t *testing.T) {
 		t.Fatalf("PromptsToday = %d, want 2", got)
 	}
 
-	if cur := c.files[path]; cur == nil || cur.offset != fileSize(t, path) {
+	if cur := c.files[path]; cur == nil || cur.cur.Offset != fileSize(t, path) {
 		t.Fatalf("cursor after the first pass = %+v, want offset %d", cur, fileSize(t, path))
 	}
 
@@ -412,8 +412,8 @@ func TestPromptCounterReadsIncrementally(t *testing.T) {
 		t.Errorf("PromptsToday after append = %d, want 3", got)
 	}
 
-	if cur := c.files[path]; cur.offset != completeSize {
-		t.Errorf("cursor after a torn line = %d, want %d (start of the torn line)", cur.offset, completeSize)
+	if cur := c.files[path]; cur.cur.Offset != completeSize {
+		t.Errorf("cursor after a torn line = %d, want %d (start of the torn line)", cur.cur.Offset, completeSize)
 	}
 
 	appendTo(t, path, `ur"}]}}`+"\n")
