@@ -1,4 +1,4 @@
-// Command agent watches Claude Code and Antigravity activity on this machine
+// Command agent watches Claude Code, Antigravity and Codex activity on this machine
 // and streams it to the GopherClaude firmware on a Gopher Badge over USB serial.
 package main
 
@@ -19,14 +19,17 @@ import (
 	"github.com/dethlex/GopherClaude/internal/infra/anthropic"
 	"github.com/dethlex/GopherClaude/internal/infra/badge"
 	"github.com/dethlex/GopherClaude/internal/infra/claudefs"
+	"github.com/dethlex/GopherClaude/internal/infra/codexfs"
 	"github.com/dethlex/GopherClaude/internal/infra/google"
 	"github.com/dethlex/GopherClaude/internal/infra/host"
+	"github.com/dethlex/GopherClaude/internal/infra/openai"
 	"github.com/dethlex/GopherClaude/internal/usecase"
 )
 
 const (
 	defaultInterval = 2 * time.Second
 	agyBinaryName   = "agy"
+	codexHomeEnv    = "CODEX_HOME"
 )
 
 // agyInstallDirs are where agy usually ends up ($HOME is expanded).
@@ -50,6 +53,7 @@ func run() error {
 		intervalFlag = flag.Duration("interval", defaultInterval, "how often to send a frame")
 		claudeDir    = flag.String("claude-dir", filepath.Join(home, ".claude"), "Claude Code data directory")
 		agyDir       = flag.String("agy-dir", filepath.Join(home, ".gemini", "antigravity-cli"), "Antigravity CLI data directory")
+		codexDir     = flag.String("codex-dir", defaultCodexDir(home), "Codex data directory (CODEX_HOME)")
 		eventsFile   = flag.String("events", filepath.Join(home, ".claude-badge", "events.jsonl"), "hook events file")
 		dryRun       = flag.Bool("dry-run", false, "log frames instead of writing to the serial port")
 		debug        = flag.Bool("debug", false, "verbose logging")
@@ -79,6 +83,10 @@ func run() error {
 
 	if agy := agySources(*agyDir, events, logger); agy != nil {
 		sources.Extras = append(sources.Extras, usecase.ExtraSources{Provider: domain.ProviderAntigravity, ProviderSources: *agy})
+	}
+
+	if codex := codexSources(*codexDir, events, logger); codex != nil {
+		sources.Extras = append(sources.Extras, usecase.ExtraSources{Provider: domain.ProviderCodex, ProviderSources: *codex})
 	}
 
 	monitor := usecase.NewMonitor(sources, logger)
@@ -180,6 +188,34 @@ func agySources(dir string, events *claudefs.EventLog, logger *slog.Logger) *use
 		Phases:   claudefs.NewResolver(events, agyfs.NewConversationDir(filepath.Join(dir, "conversations")), logger),
 		Plan:     google.NewQuotaFetcher(filepath.Join(dir, "antigravity-oauth-token"), agyBinary, logger),
 		Prompts:  agyfs.NewHistory(filepath.Join(dir, "history.jsonl"), time.Local, logger),
+	}
+}
+
+// defaultCodexDir honours CODEX_HOME the way Codex itself does.
+func defaultCodexDir(home string) string {
+	if dir := os.Getenv(codexHomeEnv); dir != "" {
+		return dir
+	}
+
+	return filepath.Join(home, ".codex")
+}
+
+// codexSources wires the Codex feeds, or returns nil when Codex is not
+// installed on this machine (its data directory is absent).
+func codexSources(dir string, events *claudefs.EventLog, logger *slog.Logger) *usecase.ProviderSources {
+	if _, err := os.Stat(dir); err != nil {
+		logger.Info("codex not detected, skipping", "module", "main", "dir", dir)
+
+		return nil
+	}
+
+	sessionsDir := filepath.Join(dir, "sessions")
+
+	return &usecase.ProviderSources{
+		Sessions: codexfs.NewSessionRegistry(filepath.Join(dir, "thread-writer-locks"), sessionsDir, logger),
+		Phases:   claudefs.NewResolver(events, codexfs.NewRolloutDir(sessionsDir), logger),
+		Plan:     openai.NewUsageFetcher(filepath.Join(dir, "auth.json"), logger),
+		Prompts:  codexfs.NewPromptCounter(sessionsDir, time.Local, logger),
 	}
 }
 
