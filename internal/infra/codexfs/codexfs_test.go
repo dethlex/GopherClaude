@@ -24,17 +24,54 @@ const (
 	threadTerminal = "0199bbbb-1111-4222-8333-444444444444"
 )
 
-// lsof -F pn over thread-writer-locks: the Desktop app-server (34530) holds
-// two thread locks plus Codex's coordination lock, a terminal TUI (4242)
-// holds one, and something (99999) has the directory itself open.
+// lsof -F pn over thread-writer-locks, in the real shape (a descriptor line
+// precedes every name): the Desktop app-server (34530) holds two thread
+// locks plus Codex's coordination lock, a terminal TUI (4242) holds one lock
+// through two descriptors, and a shell (99999) sits in the directory itself.
 const lsofLocks = "p34530\n" +
+	"f35u\n" +
 	"n/Users/x/.codex/thread-writer-locks/.coordination.lock\n" +
+	"f36u\n" +
 	"n/Users/x/.codex/thread-writer-locks/" + threadDesktop + ".lock\n" +
+	"f37u\n" +
 	"n/Users/x/.codex/thread-writer-locks/" + threadReview + ".lock\n" +
 	"p4242\n" +
+	"f12u\n" +
+	"n/Users/x/.codex/thread-writer-locks/" + threadTerminal + ".lock\n" +
+	"f13u\n" +
 	"n/Users/x/.codex/thread-writer-locks/" + threadTerminal + ".lock\n" +
 	"p99999\n" +
+	"fcwd\n" +
 	"n/Users/x/.codex/thread-writer-locks\n"
+
+// appendTo adds raw bytes to an existing rollout, the way Codex appends.
+func appendTo(t *testing.T, path, s string) {
+	t.Helper()
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.WriteString(s); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return info.Size()
+}
 
 // writeRollout creates sessions/YYYY/MM/DD/rollout-<date>T10-00-00-<id>.jsonl
 // holding the given lines and returns its path.
@@ -329,6 +366,88 @@ func TestPromptCounterCountsTodaysUserMessages(t *testing.T) {
 
 	if got := c.PromptsToday(now.Add(promptsTTL + time.Second)); got != 4 {
 		t.Errorf("PromptsToday after TTL = %d, want 4", got)
+	}
+}
+
+// A Desktop thread's rollout runs to 100 MB; re-parsing it every minute
+// would stall the frame loop, so the counter must remember how far it read
+// each file and parse only what Codex appended since.
+func TestPromptCounterReadsIncrementally(t *testing.T) {
+	sessionsDir := t.TempDir()
+	now := time.Date(2026, 9, 12, 15, 0, 0, 0, time.UTC)
+
+	path := writeRollout(t, sessionsDir, "2026-09-12", threadTerminal,
+		metaLine("2026-09-12T10:00:00.000Z", threadTerminal, "/Users/x/b", `"cli"`),
+		userLine("2026-09-12T10:00:01.000Z", "one"),
+		userLine("2026-09-12T10:05:00.000Z", "two"),
+	)
+
+	touch := func(at time.Time) {
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	touch(now)
+
+	c := NewPromptCounter(sessionsDir, time.UTC, discardLogger())
+
+	if got := c.PromptsToday(now); got != 2 {
+		t.Fatalf("PromptsToday = %d, want 2", got)
+	}
+
+	if cur := c.files[path]; cur == nil || cur.offset != fileSize(t, path) {
+		t.Fatalf("cursor after the first pass = %+v, want offset %d", cur, fileSize(t, path))
+	}
+
+	// Codex appends a full line and then the beginning of another: the
+	// complete line counts, the torn one waits for its newline and must not
+	// move the cursor past its start.
+	appendTo(t, path, userLine("2026-09-12T10:10:00.000Z", "three")+"\n")
+	completeSize := fileSize(t, path)
+	appendTo(t, path, `{"timestamp":"2026-09-12T10:11:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fo`)
+	touch(now)
+
+	at := now.Add(promptsTTL + time.Second)
+	if got := c.PromptsToday(at); got != 3 {
+		t.Errorf("PromptsToday after append = %d, want 3", got)
+	}
+
+	if cur := c.files[path]; cur.offset != completeSize {
+		t.Errorf("cursor after a torn line = %d, want %d (start of the torn line)", cur.offset, completeSize)
+	}
+
+	appendTo(t, path, `ur"}]}}`+"\n")
+	touch(at)
+
+	at = at.Add(promptsTTL + time.Second)
+	if got := c.PromptsToday(at); got != 4 {
+		t.Errorf("PromptsToday after the line completed = %d, want 4", got)
+	}
+
+	// A file that shrank (rewritten, rotated) is read from the start again.
+	if err := os.WriteFile(path, []byte(metaLine("2026-09-12T10:00:00.000Z", threadTerminal, "/Users/x/b", `"cli"`)+"\n"+
+		userLine("2026-09-12T10:20:00.000Z", "only")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	touch(at)
+
+	at = at.Add(promptsTTL + time.Second)
+	if got := c.PromptsToday(at); got != 1 {
+		t.Errorf("PromptsToday after truncation = %d, want 1", got)
+	}
+
+	// Midnight: yesterday's prompts drop out, but the cursor is kept, so a
+	// prompt appended today is found without re-reading the file.
+	tomorrow := time.Date(2026, 9, 13, 0, 30, 0, 0, time.UTC)
+	if got := c.PromptsToday(tomorrow); got != 0 {
+		t.Errorf("PromptsToday on the next day = %d, want 0", got)
+	}
+
+	appendTo(t, path, userLine("2026-09-13T00:31:00.000Z", "morning")+"\n")
+	touch(tomorrow)
+
+	if got := c.PromptsToday(tomorrow.Add(promptsTTL + time.Second)); got != 1 {
+		t.Errorf("PromptsToday after a next-day prompt = %d, want 1", got)
 	}
 }
 

@@ -151,6 +151,7 @@ func parseLockHolders(out []byte) []lockHolder {
 	var (
 		holders []lockHolder
 		pid     int
+		seen    = make(map[lockHolder]bool)
 	)
 
 	for _, line := range bytes.Split(out, []byte{'\n'}) {
@@ -167,7 +168,15 @@ func parseLockHolders(out []byte) []lockHolder {
 				continue
 			}
 
-			holders = append(holders, lockHolder{pid: pid, threadID: strings.TrimSuffix(base, lockExt)})
+			// One process may hold the same lock through several
+			// descriptors; that is still one thread.
+			holder := lockHolder{pid: pid, threadID: strings.TrimSuffix(base, lockExt)}
+			if seen[holder] {
+				continue
+			}
+
+			seen[holder] = true
+			holders = append(holders, holder)
 		}
 	}
 

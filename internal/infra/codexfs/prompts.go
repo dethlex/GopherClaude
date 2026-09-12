@@ -25,14 +25,26 @@ const (
 	promptsTTL = 60 * time.Second
 )
 
+// rolloutCursor is how far one rollout has been read and how many of today's
+// prompts it held so far. Rollouts are append-only, so a pass only parses the
+// bytes Codex added since the last one; a Desktop thread's transcript runs to
+// 100 MB, and re-reading it every minute would stall the frame loop.
+type rolloutCursor struct {
+	offset int64
+	count  int
+}
+
 // PromptCounter counts today's prompts across all rollouts: Codex no longer
 // writes history.jsonl, but every prompt is a user message in its thread's
 // transcript. A thread started days ago but used today lives under its start
 // date, so the walk covers every date and reads only files modified today.
+// Each file is read incrementally from its last cursor position.
 type PromptCounter struct {
 	sessionsDir string
 	loc         *time.Location
 	logger      *slog.Logger
+
+	files map[string]*rolloutCursor
 
 	cached    int
 	cachedDay string
@@ -46,6 +58,7 @@ func NewPromptCounter(sessionsDir string, loc *time.Location, logger *slog.Logge
 		sessionsDir: sessionsDir,
 		loc:         loc,
 		logger:      logger.With("module", "codex-prompts"),
+		files:       make(map[string]*rolloutCursor),
 	}
 }
 
@@ -55,6 +68,12 @@ func (c *PromptCounter) PromptsToday(now time.Time) int {
 
 	if day == c.cachedDay && now.Sub(c.cachedAt) < promptsTTL {
 		return c.cached
+	}
+
+	if day != c.cachedDay {
+		for _, cur := range c.files {
+			cur.count = 0
+		}
 	}
 
 	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, c.loc)
@@ -69,8 +88,6 @@ func (c *PromptCounter) PromptsToday(now time.Time) int {
 // count walks the sessions tree by Stat alone and reads only the rollouts
 // modified since midnight.
 func (c *PromptCounter) count(midnight time.Time, day string) int {
-	total := 0
-
 	walk := func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, rolloutExt) {
 			return nil
@@ -81,12 +98,22 @@ func (c *PromptCounter) count(midnight time.Time, day string) int {
 			return nil
 		}
 
-		n, err := countUserMessages(path, day, c.loc)
-		if err != nil {
-			c.logger.Debug("count prompts", "file", path, "error", err)
+		cur, ok := c.files[path]
+		if !ok {
+			cur = &rolloutCursor{}
+			c.files[path] = cur
 		}
 
-		total += n
+		if info.Size() < cur.offset {
+			cur.offset = 0
+			cur.count = 0
+		}
+
+		if info.Size() > cur.offset {
+			if err := countUserMessages(path, day, c.loc, cur); err != nil {
+				c.logger.Debug("count prompts", "file", path, "error", err)
+			}
+		}
 
 		return nil
 	}
@@ -95,35 +122,47 @@ func (c *PromptCounter) count(midnight time.Time, day string) int {
 		c.logger.Debug("walk sessions", "error", err)
 	}
 
+	total := 0
+	for _, cur := range c.files {
+		total += cur.count
+	}
+
 	return total
 }
 
-// countUserMessages counts the real prompts in one rollout: user-role
-// messages dated today whose text is not injected context. Lines can exceed
-// bufio.Scanner's limit (tool outputs are inlined), hence the Reader.
-func countUserMessages(path, day string, loc *time.Location) (int, error) {
+// countUserMessages reads appended lines from the cursor offset, counting
+// complete user prompts sent on the given day and advancing the cursor only
+// past complete lines.
+func countUserMessages(path, day string, loc *time.Location, cur *rolloutCursor) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer f.Close()
 
-	count := 0
+	if cur.offset > 0 {
+		if _, err := f.Seek(cur.offset, io.SeekStart); err != nil {
+			return err
+		}
+	}
+
 	reader := bufio.NewReader(f)
 
 	for {
 		line, err := reader.ReadBytes('\n')
-
-		if len(bytes.TrimSpace(line)) > 0 && isPromptOn(line, day, loc) {
-			count++
-		}
-
-		if errors.Is(err, io.EOF) {
-			return count, nil
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			cur.offset += int64(len(line))
+			if len(bytes.TrimSpace(line)) > 0 && isPromptOn(line, day, loc) {
+				cur.count++
+			}
 		}
 
 		if err != nil {
-			return count, err
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+
+			return err
 		}
 	}
 }
