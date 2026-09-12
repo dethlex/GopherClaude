@@ -34,6 +34,23 @@ blocked chat — with light and sound.
 - **Bottom line** — the alert banner: `ALL QUIET`, the alerting project and
   reason (`PERM` / `INPUT`), or `NO LINK`.
 
+The combined view (`ALL`) sums the counts and gives every installed assistant
+one row of two half-width bars:
+
+```
+┌─────────────────────────────────┐
+│ ✳ ✦ ⬡ ALL                   ◐ ● │
+│ CHATS 6                  WAIT 3 │
+│ ✳ 5H  44% 3h    WK  17% 2d      │
+│   [██████······]  [███·········] │
+│ ✦ 5H  12% 1h    WK   3% 5d      │
+│   [██··········]  [············] │
+│ ⬡ 5H     --     WK  17% 6d      │
+│   [············]  [███·········] │
+│ ····· rotator INPUT ·····       │
+└─────────────────────────────────┘
+```
+
 ## Features
 
 - **Active chats & waiting count** — how many Claude Code sessions are live
@@ -309,6 +326,11 @@ Agent flags: `-port /dev/cu.usbmodemXXX` (default `auto`), `-interval 2s`,
   command once — it refreshes the login and the bars are back within a
   minute. Logged in with an API key instead? Then there are no plan limits
   to show. Check `~/.claude-badge/agent.log` for `codex-quota`.
+- **No `CODEX` view although Codex is installed.** The agent looks in
+  `$CODEX_HOME`, then `~/.codex`, but the launchd service runs with a bare
+  environment; with a custom `CODEX_HOME` add `-codex-dir <path>` to the
+  agent arguments in `~/Library/LaunchAgents/com.claudecontrol.badge-agent.plist`
+  (written by `make install-agent`).
 - **`tinygo: requires go version 1.19 through 1.26`.** TinyGo lags Go
   releases; the Makefile pins `GOTOOLCHAIN=go1.26.0` for every tinygo command
   (downloaded once by the `go` tool), so build through `make`.

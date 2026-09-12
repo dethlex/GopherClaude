@@ -11,9 +11,11 @@ file="$dir/events.jsonl"
 mkdir -p "$dir"
 
 # Keep only the fields the agent reads: PostToolUse events carry the whole
-# tool output on stdin and would bloat the log otherwise.
+# tool output on stdin and would bloat the log otherwise. transcript_path
+# names the thread's rollout, a fallback key should session_id ever differ
+# from the thread id.
 if command -v jq >/dev/null 2>&1; then
-    payload=$(jq -c '{session_id, hook_event_name, cwd, tool_name, provider: "codex"}' 2>/dev/null)
+    payload=$(jq -c '{session_id, hook_event_name, cwd, transcript_path, provider: "codex"}' 2>/dev/null)
 else
     payload=$(cat | tr -d '\n')
 fi
