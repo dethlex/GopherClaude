@@ -26,9 +26,10 @@ blocked chat — with light and sound.
 
 - **`◐`** — progress spinner: animates while any session is actually working.
 - **`●`** — link status: green when the agent is connected, red when not.
-- **`✳` / `✦`** — provider marks, drawn pixel by pixel: Claude's burst and
-  Antigravity's spark. They label the header, the bars of the combined view and
-  every session row, so no view needs a letter to say whose numbers these are.
+- **`✳` / `✦` / `⬡`** — provider marks, drawn pixel by pixel: Claude's burst,
+  Antigravity's spark and Codex's hexagon. They label the header, the rows
+  of the combined view and every session row, so no view needs a letter to
+  say whose numbers these are.
 - **Bars** — 5-hour / weekly / credits usage; blue, amber at ≥70%, red at ≥90%.
 - **Bottom line** — the alert banner: `ALL QUIET`, the alerting project and
   reason (`PERM` / `INPUT`), or `NO LINK`.
@@ -43,15 +44,17 @@ blocked chat — with light and sound.
 - **Burn-rate forecast** — the agent tracks how fast the 5-hour limit is
   filling; if you're on track to hit the cap *before* it resets, the badge
   shows a red `ETA 1.4h` instead of the reset time.
-- **Antigravity (Gemini) too** — D-pad ↑/↓ on the dashboard cycles three
-  views: `CLAUDE`, `ANTIGRAVITY` (live `agy` chats, Gemini 5-hour and
-  weekly quota, prompts sent today) and `ALL` (summed counts plus four
-  slim bars). Alerts, the banner and the eyes cover both providers. Only
-  installed assistants get a screen: without `~/.gemini/antigravity-cli` the
-  badge stays on the Claude dashboard, ↑/↓ do nothing, and the session list
-  drops the provider column in favour of longer project names.
+- **Antigravity and Codex too** — D-pad ↑/↓ on the dashboard cycles the
+  views: `CLAUDE`, one per extra assistant — `ANTIGRAVITY` (live `agy`
+  chats, Gemini 5-hour and weekly quota, prompts sent today) and `CODEX`
+  (live Codex threads, ChatGPT plan limits, prompts sent today) — and `ALL`
+  (summed counts plus one row of two slim bars per provider). Alerts, the
+  banner and the eyes cover every provider. Only installed assistants get a
+  screen: without `~/.gemini/antigravity-cli` or `~/.codex` the badge skips
+  that assistant entirely; with a single one ↑/↓ do nothing and the session
+  list drops the provider column in favour of longer project names.
 - **Session list page** — flip pages with the D-pad (left/right) to see every
-  session across both providers: provider mark, project name, phase (`P`
+  session across all providers: provider mark, project name, phase (`P`
   waiting for permission, `I` waiting for input, `W` working), minutes in that
   phase, and context size (`412k`).
 - **Jump to a chat** — move the cursor with the D-pad (up/down) and press
@@ -105,7 +108,7 @@ D-pad buttons. No WiFi — USB is the only data path.
 firmware/    badge firmware (TinyGo, target gopher-badge)
 cmd/agent/   host agent (Go), runs on the Mac
 internal/    agent logic — domain / usecase / infra (clean architecture)
-scripts/     Claude Code hook + launchd service install scripts
+scripts/     hook scripts (Claude Code, Antigravity, Codex) + launchd service installer
 ```
 
 ## Requirements
@@ -148,7 +151,7 @@ No badge handy? `make dry-run` prints the protocol frames to the log.
 | **Button A**              | Open a chat on the Mac (dashboard → alerting one; list → selected row) |
 | **Button B**              | Toggle all sound on/off (persisted to flash)                  |
 | **D-pad ← / →**           | Switch page (dashboard ↔ session list)                        |
-| **D-pad ↑ / ↓**           | Dashboard: switch view (Claude / Antigravity / both); list: move the cursor |
+| **D-pad ↑ / ↓**           | Dashboard: cycle views (Claude / per assistant / all); list: move the cursor |
 | **Lay flat (screen up)**  | Do-not-disturb: sleep + mute                                  |
 
 ## How it works
@@ -162,6 +165,9 @@ api.anthropic.com/api/oauth/usage  plan limits (5h / weekly / credits)
 ~/.gemini/antigravity-cli/conversations/*.db  agy working heuristic (mtime)
 ~/.gemini/antigravity-cli/history.jsonl       agy prompts sent today
 daily-cloudcode-pa.googleapis.com             Gemini quota (5h / weekly)
+~/.codex/thread-writer-locks/<threadId>.lock  live Codex threads (lock holders, lsof)
+~/.codex/sessions/**/rollout-*.jsonl          Codex cwd, phase heuristic, context, prompts
+chatgpt.com/backend-api/wham/usage            Codex plan limits (5h / weekly)
                  │
                  ▼
         agent (every 2s) ──USB CDC──▶ badge
@@ -194,10 +200,24 @@ daily-cloudcode-pa.googleapis.com             Gemini quota (5h / weekly)
   own OAuth token; when that token has expired (idle agy does not refresh it)
   the agent refreshes it in memory with agy's client credentials and never
   writes it back. Everything Antigravity-related is optional: without
-  `~/.gemini/antigravity-cli` the views simply show no data.
+  `~/.gemini/antigravity-cli` the badge shows no Antigravity screen at all.
+- **Codex** threads are the processes holding a lock in
+  `~/.codex/thread-writer-locks/` (the TUI, `codex exec`, or Codex Desktop's
+  app-server, which keeps one lock per open thread), found with `lsof`; the
+  project comes from the thread's rollout transcript
+  (`~/.codex/sessions/…/rollout-*.jsonl`) and sub-agent threads (`codex
+  review`) are skipped. Their phase comes from Codex hooks
+  (`UserPromptSubmit`, `PostToolUse`, `PermissionRequest`, `Stop`,
+  `Interrupt`) or, without hooks, from the rollout's last task event
+  (`task_started` ⇒ working). Plan limits come from the endpoint Codex's
+  `/status` uses (`chatgpt.com/backend-api/wham/usage`) with the token from
+  `~/.codex/auth.json`; the agent only reads that token — OpenAI rotates
+  refresh tokens, so refreshing it here would log Codex out — and shows `--`
+  once it expires until you run Codex again. Prompts today are counted from
+  the rollouts (Codex no longer writes `history.jsonl`).
 
-`make install-hooks` edits `~/.claude/settings.json` (and
-`~/.gemini/config/hooks.json` when Antigravity is installed) idempotently and
+`make install-hooks` edits `~/.claude/settings.json` (plus
+`~/.gemini/config/hooks.json` when Antigravity is installed and `~/.codex/hooks.json` when Codex is) idempotently and
 keeps a backup next to each (`*.bak-badge-*`); undo with `make uninstall-hooks`.
 Hooks only take effect for sessions started afterwards.
 
@@ -206,18 +226,20 @@ Hooks only take effect for sessions started afterwards.
 One line per frame, fields separated by `|`:
 
 ```
-CC5|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>|<providers>\n
+CC6|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
+extras = <P>~<chats>~<wait>~<5h_pct>~<5h_reset>~<wk_pct>~<wk_reset>~<prompts>(;…)   P: A (Antigravity) | X (Codex)
 ```
 
-The first 13 fields describe Claude Code, the trailing 7 Antigravity; the badge
-sums the two for the combined view, alerts and the `CHATS`/`WAIT` echo.
-Percentages are `0..100`, or `-1` when unknown. Reset and ETA columns are
-host-formatted durations (`3h`, `45m`, `2d`) because the badge has no clock.
-`<sessions>` is up to 8 rows of `name~phase~minutes~ctx~provider` joined by
-`;` (phase is `P` / `I` / `W`, provider `C` / `A`), waits first across both
-providers. `<providers>` is the letters of the assistants the host monitors
-(`C`, `CA`) — the badge offers a screen only for an assistant that is
-installed. Text fields are printable ASCII only — the badge fonts are 7-bit.
+The first 13 fields describe Claude Code; `<extras>` holds one group per
+other installed assistant, in display order — an assistant is present
+exactly when its group is sent, so a Claude-only host sends an empty field
+and the badge offers no other screen. The badge sums every block for the
+combined view, alerts and the `CHATS`/`WAIT` echo. Percentages are
+`0..100`, or `-1` when unknown. Reset and ETA columns are host-formatted
+durations (`3h`, `45m`, `2d`) because the badge has no clock. `<sessions>`
+is up to 8 rows of `name~phase~minutes~ctx~provider` joined by `;` (phase
+is `P` / `I` / `W`, provider `C` / `A` / `X`), waits first across all
+providers. Text fields are printable ASCII only — the badge fonts are 7-bit.
 
 The badge echoes `ok chats=N wait=M` per frame (logged at debug level); if no
 frame arrives for 10 seconds it shows `NO LINK`.
@@ -229,7 +251,7 @@ works from the background service.
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and
-bump the `CC5` prefix on incompatible changes so a stale-firmware badge shows
+bump the `CC6` prefix on incompatible changes so a stale-firmware badge shows
 `NO LINK` instead of garbage.
 
 ## Make targets
@@ -244,7 +266,7 @@ bump the `CC5` prefix on incompatible changes so a stale-firmware badge shows
 | `make dry-run`         | Agent without the badge, frames to the log         |
 | `make demo-eyes`       | Cycle synthetic states to compare eye patterns      |
 | `make test` / `vet`    | Agent unit tests / static analysis                 |
-| `make install-hooks`   | Install Claude Code (and Antigravity) hooks        |
+| `make install-hooks`   | Install Claude Code, Antigravity and Codex hooks    |
 | `make uninstall-hooks` | Remove the hooks                                    |
 | `make install-agent`   | Agent as a launchd service (autostart at login)    |
 | `make uninstall-agent` | Stop and remove the service                        |
@@ -252,7 +274,7 @@ bump the `CC5` prefix on incompatible changes so a stale-firmware badge shows
 | `make clean`           | Remove `build/` and `bin/`                         |
 
 Agent flags: `-port /dev/cu.usbmodemXXX` (default `auto`), `-interval 2s`,
-`-dry-run`, `-debug`, `-claude-dir`, `-agy-dir`, `-events`.
+`-dry-run`, `-debug`, `-claude-dir`, `-agy-dir`, `-codex-dir`, `-events`.
 
 ## Troubleshooting
 
@@ -281,6 +303,12 @@ Agent flags: `-port /dev/cu.usbmodemXXX` (default `auto`), `-interval 2s`,
 - **`ANTIGRAVITY` view shows `--` for the quota.** The agent needs agy's OAuth
   token (`~/.gemini/antigravity-cli/antigravity-oauth-token`); run any `agy`
   command once to log in. Check `~/.claude-badge/agent.log` for `agy-quota`.
+- **`CODEX` view shows `--` for the limits.** The agent reads the ChatGPT
+  token from `~/.codex/auth.json` and never refreshes it (OpenAI rotates
+  refresh tokens; doing it here would log Codex out). Run any `codex`
+  command once — it refreshes the login and the bars are back within a
+  minute. Logged in with an API key instead? Then there are no plan limits
+  to show. Check `~/.claude-badge/agent.log` for `codex-quota`.
 - **`tinygo: requires go version 1.19 through 1.26`.** TinyGo lags Go
   releases; the Makefile pins `GOTOOLCHAIN=go1.26.0` for every tinygo command
   (downloaded once by the `go` tool), so build through `make`.
