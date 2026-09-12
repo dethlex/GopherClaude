@@ -125,7 +125,7 @@ D-pad buttons. No WiFi — USB is the only data path.
 firmware/    badge firmware (TinyGo, target gopher-badge)
 cmd/agent/   host agent (Go), runs on the Mac
 internal/    agent logic — domain / usecase / infra (clean architecture)
-scripts/     hook scripts (Claude Code, Antigravity, Codex) + launchd service installer
+scripts/     the badge hook script, hook installers, launchd service installer
 ```
 
 ## Requirements
@@ -235,7 +235,7 @@ chatgpt.com/backend-api/wham/usage            Codex plan limits (5h / weekly)
 
 `make install-hooks` edits `~/.claude/settings.json` (plus
 `~/.gemini/config/hooks.json` when Antigravity is installed and `~/.codex/hooks.json` when Codex is) idempotently and
-keeps a backup next to each (`*.bak-badge-*`); undo with `make uninstall-hooks`.
+keeps a backup next to each (`*.bak-badge-*`); undo with `make uninstall-hooks`. All three configs point at the same ~/.claude-badge/hook.sh, which tells the assistants apart by the payload shape.
 Hooks only take effect for sessions started afterwards.
 
 ## Wire protocol (host → badge)
