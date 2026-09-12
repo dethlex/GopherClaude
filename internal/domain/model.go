@@ -12,6 +12,8 @@ const (
 	ProviderClaude Provider = iota
 	// ProviderAntigravity — Antigravity CLI (agy, Gemini-backed).
 	ProviderAntigravity
+	// ProviderCodex — OpenAI Codex (cli, `codex exec` and Codex Desktop threads).
+	ProviderCodex
 )
 
 // Phase describes what a session is doing right now.
@@ -90,13 +92,14 @@ type (
 		FiveHourETA time.Duration
 	}
 
-	// ProviderStats is the per-provider block of the snapshot for providers
-	// other than the primary (Claude) one.
+	// ProviderStats is the per-provider block of the snapshot for the
+	// assistants other than the primary (Claude) one.
 	ProviderStats struct {
-		Chats   int
-		Waiting int
-		Plan    PlanUsage
-		Prompts int // prompts sent today
+		Provider Provider
+		Chats    int
+		Waiting  int
+		Plan     PlanUsage
+		Prompts  int // prompts sent today
 	}
 
 	// FocusTarget identifies the session a "jump to chat" button should
@@ -107,8 +110,8 @@ type (
 	}
 
 	// Snapshot is what the badge ultimately renders. Chats/Waiting/Usage/Plan
-	// describe Claude Code; Agy carries the Antigravity block; Sessions and
-	// FocusTargets are merged across providers.
+	// describe Claude Code; Extras carry the other assistants' blocks;
+	// Sessions and FocusTargets are merged across providers.
 	Snapshot struct {
 		Chats    int
 		Waiting  int
@@ -122,11 +125,10 @@ type (
 		// FocusTargets is one target per Sessions row, in the same order,
 		// so the badge can ask to open a specific list row by index.
 		FocusTargets []FocusTarget
-		Agy          ProviderStats
-		// Providers is which assistants this host actually monitors, in
-		// display order. The badge hides the screens of one that is not
-		// installed instead of showing empty numbers for it.
-		Providers []Provider
+		// Extras are the installed assistants besides Claude, in display
+		// order. The badge offers one screen per entry and shows nothing
+		// about an assistant that is absent from the list.
+		Extras []ProviderStats
 	}
 
 	// Command is a button action the badge sends back to the host.

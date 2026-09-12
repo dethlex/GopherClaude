@@ -29,24 +29,37 @@ func TestEncode(t *testing.T) {
 		Sessions: []domain.SessionBrief{
 			{Name: "ClaudeControl", Phase: domain.PhaseWaitingPermission, Minutes: 5, CtxTokens: 412000},
 			{Provider: domain.ProviderAntigravity, Name: "rotator", Phase: domain.PhaseWorking, CtxTokens: 73000},
+			{Provider: domain.ProviderCodex, Name: "api", Phase: domain.PhaseWaitingInput, Minutes: 2, CtxTokens: 9000},
 		},
-		Agy: domain.ProviderStats{
-			Chats:   2,
-			Waiting: 1,
-			Plan: domain.PlanUsage{
-				FiveHour:   domain.Limit{Pct: 22, ResetsAt: now.Add(4*time.Hour + 41*time.Minute)},
-				Weekly:     domain.Limit{Pct: 18, ResetsAt: now.Add(6*24*time.Hour + 4*time.Hour)},
-				CreditsPct: domain.UnknownPct,
+		Extras: []domain.ProviderStats{
+			{
+				Provider: domain.ProviderAntigravity,
+				Chats:    2,
+				Waiting:  1,
+				Plan: domain.PlanUsage{
+					FiveHour:   domain.Limit{Pct: 22, ResetsAt: now.Add(4*time.Hour + 41*time.Minute)},
+					Weekly:     domain.Limit{Pct: 18, ResetsAt: now.Add(6*24*time.Hour + 4*time.Hour)},
+					CreditsPct: domain.UnknownPct,
+				},
+				Prompts: 7,
 			},
-			Prompts: 7,
+			{
+				Provider: domain.ProviderCodex,
+				Chats:    1,
+				Plan: domain.PlanUsage{
+					FiveHour:   domain.Limit{Pct: domain.UnknownPct},
+					Weekly:     domain.Limit{Pct: 17, ResetsAt: now.Add(6*24*time.Hour + 4*time.Hour)},
+					CreditsPct: domain.UnknownPct,
+				},
+				Prompts: 3,
+			},
 		},
-		Providers: []domain.Provider{domain.ProviderClaude, domain.ProviderAntigravity},
 	}
 
 	got := Encode(snap, now)
-	want := "CC5|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
-		"|ClaudeControl~P~5~412000~C;rotator~W~0~73000~A" +
-		"|2|1|22|4h|18|6d|7|CA"
+	want := "CC6|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
+		"|ClaudeControl~P~5~412000~C;rotator~W~0~73000~A;api~I~2~9000~X" +
+		"|A~2~1~22~4h~18~6d~7;X~1~0~-1~~17~6d~3"
 
 	if got != want {
 		t.Errorf("Encode() =\n%q\nwant\n%q", got, want)
@@ -54,32 +67,28 @@ func TestEncode(t *testing.T) {
 }
 
 func TestEncodeUnknownPlan(t *testing.T) {
-	snap := domain.Snapshot{
-		Plan: domain.UnknownPlanUsage(),
-		Agy:  domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
-	}
+	snap := domain.Snapshot{Plan: domain.UnknownPlanUsage()}
 
 	got := Encode(snap, time.Now())
 
-	// No providers listed: the badge still needs one screen, so Claude.
-	want := "CC5|0|0|-1|||-1||-1||0|0||" + "|0|0|-1||-1||0|C"
+	// No extras: Claude alone, the trailing field stays empty.
+	want := "CC6|0|0|-1|||-1||-1||0|0|||"
 
 	if got != want {
 		t.Errorf("Encode() = %q, want %q", got, want)
 	}
 }
 
-func TestEncodeProvidersWithoutAntigravity(t *testing.T) {
+func TestEncodeSingleExtra(t *testing.T) {
 	snap := domain.Snapshot{
-		Plan:      domain.UnknownPlanUsage(),
-		Agy:       domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
-		Providers: []domain.Provider{domain.ProviderClaude},
+		Plan:   domain.UnknownPlanUsage(),
+		Extras: []domain.ProviderStats{{Provider: domain.ProviderCodex, Plan: domain.UnknownPlanUsage()}},
 	}
 
 	got := Encode(snap, time.Now())
 
-	if !strings.HasSuffix(got, "|C") {
-		t.Errorf("Encode() = %q, want it to end with the Claude-only provider set", got)
+	if !strings.HasSuffix(got, "|X~0~0~-1~~-1~~0") {
+		t.Errorf("Encode() = %q, want a single Codex group with no separator around it", got)
 	}
 }
 

@@ -97,19 +97,15 @@ func TestMonitorSnapshot(t *testing.T) {
 		t.Errorf("FocusTargets = %+v", got.FocusTargets)
 	}
 
-	// Without Antigravity wired, its block is explicitly "unknown", not 0%,
-	// and the badge is told not to show its screens at all.
-	if got.Agy.Chats != 0 || got.Agy.Plan.FiveHour.Pct != domain.UnknownPct {
-		t.Errorf("Agy = %+v, want empty with unknown plan", got.Agy)
-	}
-
-	if len(got.Providers) != 1 || got.Providers[0] != domain.ProviderClaude {
-		t.Errorf("Providers = %v, want Claude alone", got.Providers)
+	// Without other assistants wired there is nothing to list: the badge
+	// then offers the Claude screen alone.
+	if len(got.Extras) != 0 {
+		t.Errorf("Extras = %+v, want none", got.Extras)
 	}
 }
 
-func TestMonitorMergesAntigravity(t *testing.T) {
-	base := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+func TestMonitorMergesExtras(t *testing.T) {
+	base := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 
 	claudeSess := []domain.Session{{ID: "c1", Dir: "/Users/x/claude-proj", PID: 1}}
 	claudeStates := []domain.SessionState{
@@ -117,7 +113,7 @@ func TestMonitorMergesAntigravity(t *testing.T) {
 	}
 
 	agySess := []domain.Session{
-		{Provider: domain.ProviderAntigravity, ID: "a1", Dir: "/Users/x/agy-proj", PID: 2, Model: "gemini-3.7-flash-high"},
+		{Provider: domain.ProviderAntigravity, ID: "a1", Dir: "/Users/x/agy-proj", PID: 2},
 		{Provider: domain.ProviderAntigravity, ID: "a2", Dir: "/Users/x/agy-other", PID: 3},
 	}
 	agyStates := []domain.SessionState{
@@ -125,14 +121,29 @@ func TestMonitorMergesAntigravity(t *testing.T) {
 		{Session: agySess[1], Phase: domain.PhaseWorking},
 	}
 
+	codexSess := []domain.Session{
+		{Provider: domain.ProviderCodex, ID: "x1", Dir: "/Users/x/codex-proj", PID: 4},
+	}
+	codexStates := []domain.SessionState{
+		{Session: codexSess[0], Phase: domain.PhaseWaitingPermission, Reason: "PERM", Since: base.Add(7 * time.Minute)},
+	}
+
 	monitor := NewMonitor(Sources{
 		Claude: ProviderSources{Sessions: fakeSessions{claudeSess}, Phases: fakePhases{claudeStates}},
 		Usage:  fakeUsage{},
-		Agy: &ProviderSources{
-			Sessions: fakeSessions{agySess},
-			Phases:   fakePhases{agyStates},
-			Plan:     fakePlan{domain.PlanUsage{FiveHour: domain.Limit{Pct: 22}, Weekly: domain.Limit{Pct: 18}}},
-			Prompts:  fakePrompts{7},
+		Extras: []ExtraSources{
+			{Provider: domain.ProviderAntigravity, ProviderSources: ProviderSources{
+				Sessions: fakeSessions{agySess},
+				Phases:   fakePhases{agyStates},
+				Plan:     fakePlan{domain.PlanUsage{FiveHour: domain.Limit{Pct: 22}, Weekly: domain.Limit{Pct: 18}}},
+				Prompts:  fakePrompts{7},
+			}},
+			{Provider: domain.ProviderCodex, ProviderSources: ProviderSources{
+				Sessions: fakeSessions{codexSess},
+				Phases:   fakePhases{codexStates},
+				Plan:     fakePlan{domain.PlanUsage{FiveHour: domain.Limit{Pct: domain.UnknownPct}, Weekly: domain.Limit{Pct: 17}}},
+				Prompts:  fakePrompts{3},
+			}},
 		},
 	}, testLogger())
 
@@ -142,34 +153,39 @@ func TestMonitorMergesAntigravity(t *testing.T) {
 		t.Errorf("Claude Chats/Waiting = %d/%d, want 1/1", got.Chats, got.Waiting)
 	}
 
-	if got.Agy.Chats != 2 || got.Agy.Waiting != 1 || got.Agy.Prompts != 7 || got.Agy.Plan.FiveHour.Pct != 22 {
-		t.Errorf("Agy = %+v", got.Agy)
+	if len(got.Extras) != 2 {
+		t.Fatalf("Extras = %d blocks, want 2", len(got.Extras))
 	}
 
-	if len(got.Providers) != 2 || got.Providers[1] != domain.ProviderAntigravity {
-		t.Errorf("Providers = %v, want Claude and Antigravity", got.Providers)
+	agy, codex := got.Extras[0], got.Extras[1]
+
+	if agy.Provider != domain.ProviderAntigravity || agy.Chats != 2 || agy.Waiting != 1 || agy.Prompts != 7 || agy.Plan.FiveHour.Pct != 22 {
+		t.Errorf("Extras[0] = %+v, want the Antigravity block", agy)
+	}
+
+	if codex.Provider != domain.ProviderCodex || codex.Chats != 1 || codex.Waiting != 1 || codex.Prompts != 3 || codex.Plan.Weekly.Pct != 17 {
+		t.Errorf("Extras[1] = %+v, want the Codex block", codex)
 	}
 
 	// The banner follows the newest wait regardless of provider.
-	if got.Message != "agy-proj INPUT" || got.Focus == nil || got.Focus.PID != 2 {
-		t.Errorf("Message=%q Focus=%+v, want the agy session", got.Message, got.Focus)
+	if got.Message != "codex-proj PERM" || got.Focus == nil || got.Focus.PID != 4 {
+		t.Errorf("Message=%q Focus=%+v, want the codex session", got.Message, got.Focus)
 	}
 
-	if len(got.Sessions) != 3 {
-		t.Fatalf("Sessions = %d, want 3 merged rows", len(got.Sessions))
+	if len(got.Sessions) != 4 {
+		t.Fatalf("Sessions = %d, want 4 merged rows", len(got.Sessions))
 	}
 
-	// Waiting rows first (older wait on top), working last; providers preserved.
-	if got.Sessions[0].Name != "claude-proj" || got.Sessions[0].Provider != domain.ProviderClaude {
-		t.Errorf("Sessions[0] = %+v", got.Sessions[0])
+	// Permission waits first, then input waits (older on top), working last.
+	wantOrder := []string{"codex-proj", "claude-proj", "agy-proj", "agy-other"}
+	for i, name := range wantOrder {
+		if got.Sessions[i].Name != name {
+			t.Errorf("Sessions[%d] = %q, want %q", i, got.Sessions[i].Name, name)
+		}
 	}
 
-	if got.Sessions[1].Name != "agy-proj" || got.Sessions[1].Provider != domain.ProviderAntigravity {
-		t.Errorf("Sessions[1] = %+v", got.Sessions[1])
-	}
-
-	if got.Sessions[2].Phase != domain.PhaseWorking || got.FocusTargets[2].PID != 3 {
-		t.Errorf("Sessions[2]/FocusTargets[2] = %+v / %+v", got.Sessions[2], got.FocusTargets[2])
+	if got.Sessions[0].Provider != domain.ProviderCodex || got.FocusTargets[0].PID != 4 {
+		t.Errorf("Sessions[0]/FocusTargets[0] = %+v / %+v", got.Sessions[0], got.FocusTargets[0])
 	}
 }
 

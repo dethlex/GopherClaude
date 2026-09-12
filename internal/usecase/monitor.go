@@ -26,12 +26,18 @@ type ProviderSources struct {
 	Prompts  domain.PromptSource
 }
 
-// Sources wires the monitor. Claude is mandatory; Agy is optional (nil when
-// Antigravity is not installed).
+// ExtraSources are the feeds of an installed assistant other than Claude.
+type ExtraSources struct {
+	Provider domain.Provider
+	ProviderSources
+}
+
+// Sources wires the monitor. Claude is mandatory; Extras lists the other
+// installed assistants in display order (empty = Claude alone).
 type Sources struct {
 	Claude ProviderSources
 	Usage  domain.UsageSource
-	Agy    *ProviderSources
+	Extras []ExtraSources
 }
 
 // Monitor builds a Snapshot of all live assistant sessions.
@@ -55,27 +61,25 @@ func (m *Monitor) Snapshot(now time.Time) domain.Snapshot {
 	}
 
 	snap := domain.Snapshot{
-		Chats:     len(claude.states),
-		Waiting:   claude.waiting,
-		Usage:     usage,
-		Plan:      planOf(m.src.Claude.Plan, now),
-		Agy:       domain.ProviderStats{Plan: domain.UnknownPlanUsage()},
-		Providers: []domain.Provider{domain.ProviderClaude},
+		Chats:   len(claude.states),
+		Waiting: claude.waiting,
+		Usage:   usage,
+		Plan:    planOf(m.src.Claude.Plan, now),
 	}
 
 	all := claude.states
 
-	if m.src.Agy != nil {
-		agy := m.collect(*m.src.Agy, now)
-		all = append(all, agy.states...)
-		snap.Providers = append(snap.Providers, domain.ProviderAntigravity)
+	for _, extra := range m.src.Extras {
+		got := m.collect(extra.ProviderSources, now)
+		all = append(all, got.states...)
 
-		snap.Agy = domain.ProviderStats{
-			Chats:   len(agy.states),
-			Waiting: agy.waiting,
-			Plan:    planOf(m.src.Agy.Plan, now),
-			Prompts: promptsOf(m.src.Agy.Prompts, now),
-		}
+		snap.Extras = append(snap.Extras, domain.ProviderStats{
+			Provider: extra.Provider,
+			Chats:    len(got.states),
+			Waiting:  got.waiting,
+			Plan:     planOf(extra.Plan, now),
+			Prompts:  promptsOf(extra.Prompts, now),
+		})
 	}
 
 	if newest := newestWaiting(all); newest != nil {

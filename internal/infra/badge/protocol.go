@@ -12,23 +12,26 @@ import (
 
 // Wire format, one frame per line (firmware/protocol.go is the peer):
 //
-//	CC5|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<ag_chats>|<ag_wait>|<ag_5h_pct>|<ag_5h_reset>|<ag_wk_pct>|<ag_wk_reset>|<ag_prompts>|<providers>\n
+//	CC6|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
 //
-// The first block is Claude Code, the trailing ag_* block is Antigravity.
-// Percentages are 0..100, or -1 when unavailable. Reset/ETA columns are
-// compact host-rendered durations ("3h", "45m", "2d") because the badge has
-// no clock. The ETA column is non-empty only when the 5-hour limit will run
-// out before its reset at the current burn rate.
+// The fixed block is Claude Code. <extras> lists every other installed
+// assistant as a repeated group, groups joined by ';':
 //
-// <sessions> lists up to 8 rows for the badge's session page, both providers
+//	<P>~<chats>~<wait>~<5h_pct>~<5h_reset>~<wk_pct>~<wk_reset>~<prompts>   P: A (Antigravity) | X (Codex)
+//
+// An assistant is present exactly when its group is sent, so an empty field
+// means "Claude alone" and the badge hides every other screen. Percentages
+// are 0..100, or -1 when unavailable. Reset/ETA columns are compact
+// host-rendered durations ("3h", "45m", "2d") because the badge has no
+// clock. The ETA column is non-empty only when the 5-hour limit will run out
+// before its reset at the current burn rate.
+//
+// <sessions> lists up to 8 rows for the badge's session page, all providers
 // merged:
 //
-//	name~phase~minutes~ctx_tokens~provider(;next)*   phase: P|I|W  provider: C|A
-//
-// <providers> lists the assistants this host monitors as their letters ("C",
-// "CA"): the badge offers a screen only for an assistant that is installed.
+//	name~phase~minutes~ctx_tokens~provider(;next)*   phase: P|I|W  provider: C|A|X
 const (
-	framePrefix = "CC5"
+	framePrefix = "CC6"
 	maxMsgLen   = 24
 	maxNameLen  = 14
 
@@ -38,6 +41,8 @@ const (
 	hoursPerDay      = 24
 	resetShownAsDays = 48 * time.Hour
 
+	// sessionSep/fieldSep separate both the session rows and the extras
+	// groups: one alphabet keeps the badge parser simple.
 	sessionSep = ";"
 	fieldSep   = "~"
 
@@ -88,29 +93,28 @@ func Encode(s domain.Snapshot, now time.Time) string {
 		"|" + strconv.FormatUint(s.Usage.Output, 10) +
 		"|" + sanitizeText(s.Message) +
 		"|" + encodeSessions(s.Sessions) +
-		"|" + strconv.Itoa(s.Agy.Chats) +
-		"|" + strconv.Itoa(s.Agy.Waiting) +
-		"|" + strconv.Itoa(s.Agy.Plan.FiveHour.Pct) +
-		"|" + formatReset(s.Agy.Plan.FiveHour, now) +
-		"|" + strconv.Itoa(s.Agy.Plan.Weekly.Pct) +
-		"|" + formatReset(s.Agy.Plan.Weekly, now) +
-		"|" + strconv.Itoa(s.Agy.Prompts) +
-		"|" + encodeProviders(s.Providers)
+		"|" + encodeExtras(s.Extras, now)
 }
 
-// encodeProviders renders the monitored assistants as their letters. An empty
-// set would leave the badge with nothing to show, so it falls back to Claude.
-func encodeProviders(providers []domain.Provider) string {
-	if len(providers) == 0 {
-		return string(providerLetter(domain.ProviderClaude))
+// encodeExtras renders one group per installed assistant besides Claude, in
+// display order; nothing at all when the host monitors Claude alone.
+func encodeExtras(extras []domain.ProviderStats, now time.Time) string {
+	groups := make([]string, 0, len(extras))
+
+	for _, e := range extras {
+		groups = append(groups, strings.Join([]string{
+			string(providerLetter(e.Provider)),
+			strconv.Itoa(e.Chats),
+			strconv.Itoa(e.Waiting),
+			strconv.Itoa(e.Plan.FiveHour.Pct),
+			formatReset(e.Plan.FiveHour, now),
+			strconv.Itoa(e.Plan.Weekly.Pct),
+			formatReset(e.Plan.Weekly, now),
+			strconv.Itoa(e.Prompts),
+		}, fieldSep))
 	}
 
-	letters := make([]byte, 0, len(providers))
-	for _, p := range providers {
-		letters = append(letters, providerLetter(p))
-	}
-
-	return string(letters)
+	return strings.Join(groups, sessionSep)
 }
 
 func encodeSessions(sessions []domain.SessionBrief) string {
@@ -152,6 +156,8 @@ func providerLetter(p domain.Provider) byte {
 	switch p {
 	case domain.ProviderAntigravity:
 		return 'A'
+	case domain.ProviderCodex:
+		return 'X'
 	case domain.ProviderClaude:
 		return 'C'
 	default:

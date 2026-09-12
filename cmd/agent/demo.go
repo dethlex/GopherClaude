@@ -70,11 +70,11 @@ func demoScene(elapsed time.Duration) (name string, snapshot domain.Snapshot, in
 	return scene.name, withUnknownPlan(scene.snapshot), idx
 }
 
-// withUnknownPlan blanks the plan bars: the demo says nothing about limits, and
-// stale-looking bars would be misleading.
+// withUnknownPlan blanks the plan bars: the demo says nothing about limits,
+// and stale-looking bars would be misleading. The scenes list no extra
+// assistants, so the badge shows the Claude screen alone.
 func withUnknownPlan(s domain.Snapshot) domain.Snapshot {
 	s.Plan = domain.UnknownPlanUsage()
-	s.Agy.Plan = domain.UnknownPlanUsage()
 
 	return s
 }

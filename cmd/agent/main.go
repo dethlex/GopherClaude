@@ -75,7 +75,10 @@ func run() error {
 			Plan: anthropic.NewPlanFetcher(logger),
 		},
 		Usage: claudefs.NewUsageCollector(filepath.Join(*claudeDir, "projects"), time.Local, logger),
-		Agy:   agySources(*agyDir, events, logger),
+	}
+
+	if agy := agySources(*agyDir, events, logger); agy != nil {
+		sources.Extras = append(sources.Extras, usecase.ExtraSources{Provider: domain.ProviderAntigravity, ProviderSources: *agy})
 	}
 
 	monitor := usecase.NewMonitor(sources, logger)
@@ -101,7 +104,7 @@ func run() error {
 		"interval", intervalFlag.String(),
 		"port", *portFlag,
 		"dry_run", *dryRun,
-		"antigravity", sources.Agy != nil,
+		"extras", extraNames(sources.Extras),
 	)
 
 	ticker := time.NewTicker(*intervalFlag)
@@ -129,14 +132,21 @@ func run() error {
 		if err != nil {
 			logger.Warn("send frame", "module", "main", "error", err)
 		} else {
-			logger.Debug("frame sent",
+			attrs := []any{
 				"module", "main",
 				"chats", snapshot.Chats,
 				"waiting", snapshot.Waiting,
-				"agy_chats", snapshot.Agy.Chats,
-				"agy_waiting", snapshot.Agy.Waiting,
 				"msg", snapshot.Message,
-			)
+			}
+
+			for _, e := range snapshot.Extras {
+				attrs = append(attrs,
+					providerName(e.Provider)+"_chats", e.Chats,
+					providerName(e.Provider)+"_waiting", e.Waiting,
+				)
+			}
+
+			logger.Debug("frame sent", attrs...)
 
 			handleCommands(cmds, snapshot, focuser, logger)
 		}
@@ -170,6 +180,28 @@ func agySources(dir string, events *claudefs.EventLog, logger *slog.Logger) *use
 		Phases:   claudefs.NewResolver(events, agyfs.NewConversationDir(filepath.Join(dir, "conversations")), logger),
 		Plan:     google.NewQuotaFetcher(filepath.Join(dir, "antigravity-oauth-token"), agyBinary, logger),
 		Prompts:  agyfs.NewHistory(filepath.Join(dir, "history.jsonl"), time.Local, logger),
+	}
+}
+
+// extraNames lists the secondary assistants for the startup log.
+func extraNames(extras []usecase.ExtraSources) string {
+	names := make([]string, 0, len(extras))
+	for _, e := range extras {
+		names = append(names, providerName(e.Provider))
+	}
+
+	return strings.Join(names, ",")
+}
+
+// providerName is the log label of an assistant.
+func providerName(p domain.Provider) string {
+	switch p {
+	case domain.ProviderAntigravity:
+		return "antigravity"
+	case domain.ProviderCodex:
+		return "codex"
+	default:
+		return "claude"
 	}
 }
 
