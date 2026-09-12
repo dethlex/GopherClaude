@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -258,6 +260,74 @@ func TestUsageFetcherPlanNeverBlocks(t *testing.T) {
 
 	if time.Since(start) > time.Second {
 		t.Errorf("Plan blocked for %v; the fetch must run in the background", time.Since(start))
+	}
+}
+
+// Every failure path formats an error; none of them may carry the token or
+// the account id into the log.
+func TestUsageFetcherNeverLogsSecrets(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	token := jwt(now.Add(time.Hour))
+
+	var (
+		status = int32(http.StatusOK)
+		body   atomic.Value
+		logs   bytes.Buffer
+	)
+
+	body.Store(teamFixture)
+
+	f, _ := testFetcher(t, authJSON(token), func(w http.ResponseWriter, r *http.Request) {
+		if s := atomic.LoadInt32(&status); s != http.StatusOK {
+			http.Error(w, "no", int(s))
+
+			return
+		}
+
+		_, _ = w.Write([]byte(body.Load().(string)))
+	})
+	f.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	f.update(now) // success
+	body.Store("not json")
+	f.update(now) // malformed body
+	atomic.StoreInt32(&status, http.StatusUnauthorized)
+	f.update(now) // rejected token
+	atomic.StoreInt32(&status, http.StatusTooManyRequests)
+	f.update(now) // rate limited
+
+	missing := NewUsageFetcher(filepath.Join(t.TempDir(), "absent.json"), slog.New(slog.NewTextHandler(&logs, nil)))
+	missing.update(now)
+
+	out := logs.String()
+	if out == "" {
+		t.Fatal("expected log output to inspect")
+	}
+
+	if strings.Contains(out, token) || strings.Contains(out, "acct-1") {
+		t.Errorf("log leaks credentials:\n%s", out)
+	}
+}
+
+// ~/.codex without auth.json is a normal state (codex logout removes it):
+// a login problem to warn about once, not once a minute.
+func TestUsageFetcherMissingAuthFileWarnsOnce(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+	var logs bytes.Buffer
+
+	f := NewUsageFetcher(filepath.Join(t.TempDir(), "absent.json"), slog.New(slog.NewTextHandler(&logs, nil)))
+
+	f.update(now)
+	f.update(now.Add(cacheTTL + time.Second))
+	f.update(now.Add(2*cacheTTL + 2*time.Second))
+
+	if got := strings.Count(logs.String(), "fetch codex quota"); got != 1 {
+		t.Errorf("warnings = %d, want 1:\n%s", got, logs.String())
+	}
+
+	if plan := f.Plan(now); plan.Weekly.Pct != domain.UnknownPct {
+		t.Errorf("Plan = %+v, want unknown", plan)
 	}
 }
 

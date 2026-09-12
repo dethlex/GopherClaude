@@ -44,6 +44,8 @@ const (
 
 var (
 	errRateLimited = errors.New("rate limited")
+	errNoAuthFile  = errors.New("no auth.json: run codex to log in")
+	errBadAuthFile = errors.New("bad auth.json: run codex to log in")
 	errNoToken     = errors.New("auth.json has no ChatGPT tokens (logged in with an API key?)")
 	errExpired     = errors.New("access token expired; run codex once to refresh the login")
 	errRejected    = errors.New("access token rejected (401); run codex once to refresh the login")
@@ -166,7 +168,7 @@ func (f *UsageFetcher) warn(err error) {
 }
 
 func isLoginError(err error) bool {
-	return errors.Is(err, errNoToken) || errors.Is(err, errExpired) || errors.Is(err, errRejected)
+	return errors.Is(err, errNoAuthFile) || errors.Is(err, errBadAuthFile) || errors.Is(err, errNoToken) || errors.Is(err, errExpired) || errors.Is(err, errRejected)
 }
 
 func (f *UsageFetcher) fetch(now time.Time) (domain.PlanUsage, error) {
@@ -217,12 +219,15 @@ func (f *UsageFetcher) fetch(now time.Time) (domain.PlanUsage, error) {
 func (f *UsageFetcher) credentials(now time.Time) (access, account string, err error) {
 	raw, err := os.ReadFile(f.authPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", fmt.Errorf("%w: %w", errNoAuthFile, err)
+		}
 		return "", "", fmt.Errorf("read auth file: %w", err)
 	}
 
 	var af authFile
 	if err := json.Unmarshal(raw, &af); err != nil {
-		return "", "", fmt.Errorf("parse auth file: %w", err)
+		return "", "", fmt.Errorf("%w: %w", errBadAuthFile, err)
 	}
 
 	if af.Tokens.AccessToken == "" || af.Tokens.AccountID == "" {
@@ -262,7 +267,6 @@ func jwtExpiry(token string) time.Time {
 
 // usageResponse is the part of wham/usage the badge reads.
 type usageResponse struct {
-	PlanType  string `json:"plan_type"`
 	RateLimit struct {
 		Primary   *usageWindow `json:"primary_window"`
 		Secondary *usageWindow `json:"secondary_window"`
@@ -287,7 +291,7 @@ func parseUsage(body []byte) (domain.PlanUsage, error) {
 	found := false
 
 	for _, w := range []*usageWindow{ur.RateLimit.Primary, ur.RateLimit.Secondary} {
-		if w == nil {
+		if w == nil || w.WindowSeconds <= 0 {
 			continue
 		}
 
