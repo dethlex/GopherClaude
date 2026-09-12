@@ -1,66 +1,52 @@
 #!/bin/sh
-# Removes the badge hook entries from ~/.claude/settings.json, the
-# "gopher-badge" group from ~/.gemini/config/hooks.json (if present) and
-# the badge entries from ~/.codex/hooks.json (with backups).
+# Removes the badge hook entries (current and legacy paths) from
+# ~/.claude/settings.json and ~/.codex/hooks.json and the "gopher-badge"
+# group from ~/.gemini/config/hooks.json, with backups.
 set -eu
 
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 AGY_HOOKS="${AGY_HOOKS:-$HOME/.gemini/config/hooks.json}"
-HOOK="$HOME/.claude-badge/hook.sh"
 CODEX_HOOKS="${CODEX_HOOKS:-${CODEX_HOME:-$HOME/.codex}/hooks.json}"
-CODEX_HOOK="$HOME/.claude-badge/codex-hook.sh"
+BADGE_DIR="${BADGE_DIR:-$HOME/.claude-badge}"
+OURS="$BADGE_DIR/hook.sh $BADGE_DIR/agy-hook.sh $BADGE_DIR/codex-hook.sh"
 
 command -v jq >/dev/null 2>&1 || {
     echo "error: jq is required (brew install jq)" >&2
     exit 1
 }
 
-if [ -f "$SETTINGS" ]; then
-    backup="$SETTINGS.bak-badge-$(date +%Y%m%d%H%M%S)"
-    cp "$SETTINGS" "$backup"
+# strip_ours FILE: drops every command hook of ours from a Claude Code-style
+# hooks object and the event keys left empty.
+strip_ours() {
+    file="$1"
+    [ -f "$file" ] || return 0
+
+    cp "$file" "$file.bak-badge-$(date +%Y%m%d%H%M%S)"
 
     tmp=$(mktemp)
-    jq --arg cmd "$HOOK" '
+    jq --arg ours "$OURS" '
+      def mine: $ours | split(" ");
       if .hooks then
         .hooks |= (
-          with_entries(
-            .value |= map(select(((.hooks // []) | map(.command) | index($cmd)) == null))
-          )
+          with_entries(.value |= map(select(((.hooks // []) | map(.command) | any(IN(mine[]))) | not)))
           | with_entries(select(.value != []))
         )
       else . end
-    ' "$SETTINGS" > "$tmp"
+    ' "$file" > "$tmp"
+    mv "$tmp" "$file"
 
-    mv "$tmp" "$SETTINGS"
-    echo "Claude Code badge hooks removed from $SETTINGS (backup: $backup)"
-fi
+    echo "Badge hooks removed from $file"
+}
+
+strip_ours "$SETTINGS"
+strip_ours "$CODEX_HOOKS"
 
 if [ -f "$AGY_HOOKS" ]; then
-    abackup="$AGY_HOOKS.bak-badge-$(date +%Y%m%d%H%M%S)"
-    cp "$AGY_HOOKS" "$abackup"
+    cp "$AGY_HOOKS" "$AGY_HOOKS.bak-badge-$(date +%Y%m%d%H%M%S)"
 
     tmp=$(mktemp)
     jq 'del(.["gopher-badge"])' "$AGY_HOOKS" > "$tmp"
     mv "$tmp" "$AGY_HOOKS"
-    echo "Antigravity badge hooks removed from $AGY_HOOKS (backup: $abackup)"
-fi
 
-if [ -f "$CODEX_HOOKS" ]; then
-    cbackup="$CODEX_HOOKS.bak-badge-$(date +%Y%m%d%H%M%S)"
-    cp "$CODEX_HOOKS" "$cbackup"
-
-    tmp=$(mktemp)
-    jq --arg cmd "$CODEX_HOOK" '
-      if .hooks then
-        .hooks |= (
-          with_entries(
-            .value |= map(select(((.hooks // []) | map(.command) | index($cmd)) == null))
-          )
-          | with_entries(select(.value != []))
-        )
-      else . end
-    ' "$CODEX_HOOKS" > "$tmp"
-
-    mv "$tmp" "$CODEX_HOOKS"
-    echo "Codex badge hooks removed from $CODEX_HOOKS (backup: $cbackup)"
+    echo "Antigravity badge hooks removed from $AGY_HOOKS"
 fi
