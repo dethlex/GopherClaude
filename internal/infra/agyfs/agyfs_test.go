@@ -20,51 +20,20 @@ const lsofPresence = "p11238\nn/Users/x/.gemini/antigravity-cli/presence/16a94c2
 	"p18889\nn/Users/x/.gemini/antigravity-cli/presence/88c54ac9-d9b3.lock\n" +
 	"p99999\nn/Users/x/.gemini/antigravity-cli/presence\n" // a directory opener, not a lock
 
-func TestParseLsofPNAndLockHolders(t *testing.T) {
-	holders := lockHolders(parseLsofPN([]byte(lsofPresence)))
-
-	if len(holders) != 2 {
-		t.Fatalf("holders = %v, want 2 entries", holders)
-	}
-
-	if holders[11238] != "16a94c26-3837" || holders[18889] != "88c54ac9-d9b3" {
-		t.Errorf("holders = %v", holders)
-	}
-}
-
-func TestParseModels(t *testing.T) {
-	out := "11238 agy --model gemini-3.7-flash-medium --mode accept-edits\n" +
-		"21873 agy --dangerously-skip-permissions\n" +
-		"  42281 /usr/local/bin/agy --model gemini-3.1-pro-high\n"
-
-	got := parseModels([]byte(out))
-
-	if got[11238] != "gemini-3.7-flash-medium" || got[42281] != "gemini-3.1-pro-high" {
-		t.Errorf("parseModels = %v", got)
-	}
-
-	if _, ok := got[21873]; ok {
-		t.Errorf("pid without --model must be absent, got %v", got)
-	}
-}
-
 func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 	calls := 0
 
 	r := NewSessionRegistry("/presence", discardLogger())
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
-	r.now = func() time.Time { return now }
-	r.runLsof = func(args ...string) ([]byte, error) {
+	r.Now = func() time.Time { return now }
+	r.Run = func(args ...string) ([]byte, error) {
 		calls++
 
 		if args[0] == "-F" { // presence walk
 			return []byte(lsofPresence), nil
 		}
 
-		return []byte("p11238\nn/Users/x/proj-a\np18889\nn/Users/x/proj-b\n"), nil
-	}
-	r.runPs = func([]int) ([]byte, error) {
-		return []byte("11238 agy --model gemini-3.7-flash-high\n18889 agy\n"), nil
+		return []byte("p11238\nfcwd\nn/Users/x/proj-a\np18889\nfcwd\nn/Users/x/proj-b\n"), nil
 	}
 
 	sessions, err := r.Sessions()
@@ -78,12 +47,12 @@ func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 
 	first := sessions[0]
 	if first.Provider != domain.ProviderAntigravity || first.PID != 11238 ||
-		first.ID != "16a94c26-3837" || first.Dir != "/Users/x/proj-a" || first.Model != "gemini-3.7-flash-high" {
+		first.ID != "16a94c26-3837" || first.Dir != "/Users/x/proj-a" {
 		t.Errorf("sessions[0] = %+v", first)
 	}
 
-	if sessions[1].Model != "" {
-		t.Errorf("sessions[1].Model = %q, want empty", sessions[1].Model)
+	if sessions[1].PID != 18889 || sessions[1].Dir != "/Users/x/proj-b" {
+		t.Errorf("sessions[1] = %+v", sessions[1])
 	}
 
 	// Within the TTL the registry must not shell out again.

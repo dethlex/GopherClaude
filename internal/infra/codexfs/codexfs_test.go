@@ -105,27 +105,6 @@ func metaLine(ts, id, cwd, source string) string {
 		`,"model_provider":"openai"}}`
 }
 
-func TestParseLockHolders(t *testing.T) {
-	got := parseLockHolders([]byte(lsofLocks))
-
-	// Sorted by pid, then thread id, whatever order lsof printed them in.
-	want := []lockHolder{
-		{pid: 4242, threadID: threadTerminal},
-		{pid: 34530, threadID: threadReview},
-		{pid: 34530, threadID: threadDesktop},
-	}
-
-	if len(got) != len(want) {
-		t.Fatalf("holders = %+v, want %+v", got, want)
-	}
-
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("holders[%d] = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-}
-
 func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 	sessionsDir := t.TempDir()
 
@@ -142,8 +121,8 @@ func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 
 	r := NewSessionRegistry("/locks", sessionsDir, discardLogger())
-	r.now = func() time.Time { return now }
-	r.runLsof = func(args ...string) ([]byte, error) {
+	r.Now = func() time.Time { return now }
+	r.Run = func(args ...string) ([]byte, error) {
 		calls++
 
 		return []byte(lsofLocks), nil
@@ -199,7 +178,7 @@ func TestSessionRegistrySkipsThreadWithoutRollout(t *testing.T) {
 		metaLine("2026-09-12T09:30:00.000Z", threadTerminal, "/Users/x/proj-b", `"cli"`))
 
 	r := NewSessionRegistry("/locks", sessionsDir, discardLogger())
-	r.runLsof = func(...string) ([]byte, error) {
+	r.Run = func(...string) ([]byte, error) {
 		return []byte("p4242\nn/Users/x/.codex/thread-writer-locks/" + threadTerminal + ".lock\n" +
 			"p4343\nn/Users/x/.codex/thread-writer-locks/" + threadNoFile + ".lock\n"), nil
 	}
@@ -216,7 +195,7 @@ func TestSessionRegistrySkipsThreadWithoutRollout(t *testing.T) {
 
 func TestSessionRegistryEmptyWhenNothingHeld(t *testing.T) {
 	r := NewSessionRegistry("/locks", t.TempDir(), discardLogger())
-	r.runLsof = func(...string) ([]byte, error) { return nil, nil }
+	r.Run = func(...string) ([]byte, error) { return nil, nil }
 
 	sessions, err := r.Sessions()
 	if err != nil {

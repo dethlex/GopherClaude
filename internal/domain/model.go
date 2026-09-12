@@ -44,7 +44,6 @@ type (
 		// (Claude Code writes an idle/waiting status for cli sessions); it
 		// outranks the transcript heuristic but not a hook event.
 		Idle      bool
-		Model     string // as launched, e.g. "gemini-3.7-flash-high"; may be empty
 		StartedAt time.Time
 	}
 
