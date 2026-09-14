@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"sort"
@@ -35,6 +36,14 @@ const (
 	// writes into the void without an error. Drop the port so the next Send
 	// reopens it. ~4 missed 2s frames.
 	echoSilenceTimeout = 8 * time.Second
+
+	// The badge receives over TinyGo's USB CDC: a 512-byte ring with no
+	// flow control (what does not fit is dropped) drained every 10 ms by
+	// its main loop. A CC7 frame runs to a few kilobytes, so it goes out
+	// in pieces small enough for two of them to sit in the ring while the
+	// badge is busy repainting.
+	frameChunkSize  = 128
+	frameChunkPause = 10 * time.Millisecond
 )
 
 var errNoPort = errors.New("no usb serial port found")
@@ -72,7 +81,7 @@ func (s *SerialSink) Send(snapshot domain.Snapshot) ([]domain.Command, error) {
 
 	line := Encode(snapshot, now) + "\n"
 
-	if _, err := s.port.Write([]byte(line)); err != nil {
+	if err := writeChunked(s.port, []byte(line), frameChunkSize, func() { time.Sleep(frameChunkPause) }); err != nil {
 		s.drop()
 
 		return nil, fmt.Errorf("write to %q: %w", s.path, err)
@@ -212,4 +221,22 @@ func isCommandLine(line string) bool {
 	_, ok := ParseCommand(line)
 
 	return ok
+}
+
+// writeChunked writes data in pieces of at most size bytes and calls pause
+// between pieces (not after the last one).
+func writeChunked(w io.Writer, data []byte, size int, pause func()) error {
+	for start := 0; start < len(data); start += size {
+		end := min(start+size, len(data))
+
+		if _, err := w.Write(data[start:end]); err != nil {
+			return err
+		}
+
+		if end < len(data) {
+			pause()
+		}
+	}
+
+	return nil
 }
