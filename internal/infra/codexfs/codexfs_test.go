@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,7 +116,10 @@ func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 	writeRollout(t, sessionsDir, "2026-09-12", threadReview,
 		metaLine("2026-09-12T09:00:00.000Z", threadReview, "/Users/x/proj-a", `{"subagent":"review"}`))
 	writeRollout(t, sessionsDir, "2026-09-12", threadTerminal,
-		metaLine("2026-09-12T09:30:00.000Z", threadTerminal, "/Users/x/proj-b", `"cli"`))
+		metaLine("2026-09-12T09:30:00.000Z", threadTerminal, "/Users/x/proj-b", `"cli"`),
+		userLine("2026-09-12T09:30:00.100Z", "<environment_context>\n  <cwd>/Users/x/proj-b</cwd>\n</environment_context>"),
+		userLine("2026-09-12T09:30:05.000Z", "add retries to the client"),
+		userLine("2026-09-12T09:40:00.000Z", "now the tests"))
 
 	calls := 0
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
@@ -139,15 +143,16 @@ func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 	}
 
 	term := sessions[0]
-	if term.Provider != domain.ProviderCodex || term.PID != 4242 || term.ID != threadTerminal || term.Dir != "/Users/x/proj-b" {
-		t.Errorf("sessions[0] = %+v", term)
+	if term.Provider != domain.ProviderCodex || term.PID != 4242 || term.ID != threadTerminal || term.Dir != "/Users/x/proj-b" ||
+		term.Title != "add retries to the client" {
+		t.Errorf("sessions[0] = %+v, want the first real prompt as title", term)
 	}
 
 	desk := sessions[1]
 	wantStart := time.Date(2026, 9, 8, 11, 42, 15, 387_000_000, time.UTC)
 
-	if desk.PID != 34530 || desk.ID != threadDesktop || desk.Dir != "/Users/x/proj-a" || !desk.StartedAt.Equal(wantStart) {
-		t.Errorf("sessions[1] = %+v, want the Desktop thread started %v", desk, wantStart)
+	if desk.PID != 34530 || desk.ID != threadDesktop || desk.Dir != "/Users/x/proj-a" || !desk.StartedAt.Equal(wantStart) || desk.Title != "" {
+		t.Errorf("sessions[1] = %+v, want the Desktop thread started %v and untitled", desk, wantStart)
 	}
 
 	// Within the TTL the registry must not shell out again.
@@ -435,5 +440,70 @@ func TestPromptCounterMissingDir(t *testing.T) {
 
 	if got := c.PromptsToday(time.Now()); got != 0 {
 		t.Errorf("PromptsToday(missing dir) = %d, want 0", got)
+	}
+}
+
+// Codex Desktop opens a thread before the first message: a rollout with no
+// prompt yet must not pin an empty title.
+func TestSessionRegistryPicksUpFirstPromptLater(t *testing.T) {
+	sessionsDir := t.TempDir()
+	path := writeRollout(t, sessionsDir, "2026-09-12", threadTerminal,
+		metaLine("2026-09-12T09:30:00.000Z", threadTerminal, "/Users/x/proj-b", `"cli"`))
+
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+	r := NewSessionRegistry("/locks", sessionsDir, discardLogger())
+	r.Now = func() time.Time { return now }
+	r.Run = func(...string) ([]byte, error) {
+		return []byte("p4242\nn/Users/x/.codex/thread-writer-locks/" + threadTerminal + ".lock\n"), nil
+	}
+
+	sessions, err := r.Sessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "" {
+		t.Fatalf("Sessions = %+v, %v; want one untitled thread", sessions, err)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.WriteString(userLine("2026-09-12T09:31:00.000Z", "rename the flag") + "\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Close()
+
+	now = now.Add(registryTTL + time.Second)
+
+	sessions, err = r.Sessions()
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "rename the flag" {
+		t.Fatalf("Sessions after the prompt = %+v, %v; want the title", sessions, err)
+	}
+}
+
+// Desktop rollouts grow to 100 MB; the title scan reads a bounded head and
+// gives up quietly when the first prompt lies beyond it.
+func TestReadHeadScanIsBounded(t *testing.T) {
+	sessionsDir := t.TempDir()
+
+	filler := eventLine("2026-09-12T09:30:01.000Z", "agent_reasoning", `"text":"`+strings.Repeat("x", 1024)+`"`)
+	lines := []string{metaLine("2026-09-12T09:30:00.000Z", threadTerminal, "/Users/x/proj-b", `"cli"`)}
+
+	for i := 0; i < headScanLimit/1024+16; i++ {
+		lines = append(lines, filler)
+	}
+
+	lines = append(lines, userLine("2026-09-12T09:40:00.000Z", "too far down"))
+
+	path := writeRollout(t, sessionsDir, "2026-09-12", threadTerminal, lines...)
+
+	head, err := readHead(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if head.meta.CWD != "/Users/x/proj-b" || head.firstPrompt != "" {
+		t.Errorf("readHead = %+v, want the meta and no prompt", head)
 	}
 }

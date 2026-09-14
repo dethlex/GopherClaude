@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -43,6 +44,15 @@ const (
 	// user messages whose text is an XML-ish block; real prompts do not
 	// start like that.
 	injectedPrefix = "<"
+
+	// The first prompt sits right after session_meta and turn_context;
+	// scanning further into a 100 MB Desktop rollout would stall the
+	// registry for nothing.
+	headScanLimit = 256 * 1024
+
+	// Individual rollout lines (turn_context with instructions) run to
+	// tens of KB; the scanner needs room for them.
+	headLineLimit = 128 * 1024
 )
 
 // record is the envelope of every rollout line; the payload is decoded per
@@ -65,6 +75,13 @@ type sessionMeta struct {
 
 	// StartedAt is the envelope timestamp of the record.
 	StartedAt time.Time `json:"-"`
+}
+
+// rolloutHead is what the registry keeps per thread: its first record and
+// the user's first prompt, the thread's title as far as the disk knows.
+type rolloutHead struct {
+	meta        sessionMeta
+	firstPrompt string
 }
 
 // isSubagent reports whether the thread belongs to another thread rather
@@ -94,6 +111,25 @@ type messagePayload struct {
 	} `json:"content"`
 }
 
+// userPrompt extracts the text of a record when it is a prompt the user
+// typed; injected context blocks and every other record yield false.
+func userPrompt(rec record) (string, bool) {
+	if rec.Type != recResponse {
+		return "", false
+	}
+
+	var msg messagePayload
+	if err := json.Unmarshal(rec.Payload, &msg); err != nil || msg.Type != itemMessage || msg.Role != roleUser {
+		return "", false
+	}
+
+	if len(msg.Content) == 0 || msg.Content[0].Text == "" || strings.HasPrefix(msg.Content[0].Text, injectedPrefix) {
+		return "", false
+	}
+
+	return msg.Content[0].Text, true
+}
+
 // findRollout locates a thread's transcript; the newest match wins should a
 // thread ever be re-recorded.
 func findRollout(sessionsDir, threadID string) (string, error) {
@@ -111,36 +147,58 @@ func findRollout(sessionsDir, threadID string) (string, error) {
 	return matches[len(matches)-1], nil
 }
 
-// readMeta decodes the first line of a rollout.
-func readMeta(path string) (sessionMeta, error) {
+// readHead decodes a rollout's session_meta and looks for the user's first
+// prompt within the next headScanLimit bytes; firstPrompt stays empty when
+// none is there yet.
+func readHead(path string) (rolloutHead, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return sessionMeta{}, err
+		return rolloutHead{}, err
 	}
 	defer f.Close()
 
-	line, err := bufio.NewReader(f).ReadBytes('\n')
+	reader := bufio.NewReaderSize(f, headLineLimit)
+
+	line, err := reader.ReadBytes('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return sessionMeta{}, err
+		return rolloutHead{}, err
 	}
 
 	var rec record
 	if err := json.Unmarshal(line, &rec); err != nil {
-		return sessionMeta{}, fmt.Errorf("decode first record of %q: %w", path, err)
+		return rolloutHead{}, fmt.Errorf("decode first record of %q: %w", path, err)
 	}
 
 	if rec.Type != recSessionMeta {
-		return sessionMeta{}, fmt.Errorf("first record of %q is %q, want %s", path, rec.Type, recSessionMeta)
+		return rolloutHead{}, fmt.Errorf("first record of %q is %q, want %s", path, rec.Type, recSessionMeta)
 	}
 
-	var meta sessionMeta
-	if err := json.Unmarshal(rec.Payload, &meta); err != nil {
-		return sessionMeta{}, fmt.Errorf("decode session_meta of %q: %w", path, err)
+	var head rolloutHead
+	if err := json.Unmarshal(rec.Payload, &head.meta); err != nil {
+		return rolloutHead{}, fmt.Errorf("decode session_meta of %q: %w", path, err)
 	}
 
-	meta.StartedAt, _ = parseTimestamp(rec.Timestamp)
+	head.meta.StartedAt, _ = parseTimestamp(rec.Timestamp)
 
-	return meta, nil
+	scanner := bufio.NewScanner(io.LimitReader(reader, headScanLimit))
+	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), headLineLimit)
+
+	for scanner.Scan() {
+		var rec record
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			continue
+		}
+
+		if text, ok := userPrompt(rec); ok {
+			head.firstPrompt = text
+
+			break
+		}
+	}
+
+	// A scanner error here is a torn or overlong line inside the head:
+	// the meta is good and the prompt simply stays unknown for now.
+	return head, nil
 }
 
 // parseTimestamp reads a rollout timestamp ("2026-09-08T11:42:15.387Z").

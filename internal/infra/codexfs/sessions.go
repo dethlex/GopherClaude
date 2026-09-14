@@ -12,12 +12,14 @@ import (
 // is cached and refreshed on this cadence.
 const registryTTL = 10 * time.Second
 
-// threadIndex maps live threads to their rollout's first record. A thread's
-// first record never changes, so it is located and decoded once.
+// threadIndex maps live threads to their rollout's head. The first record
+// never changes; the first prompt may not exist yet when the thread appears
+// (Desktop opens a thread before the first message), so a head without one
+// is read again on the next build.
 type threadIndex struct {
 	sessionsDir string
 	logger      *slog.Logger
-	metas       map[string]sessionMeta
+	heads       map[string]rolloutHead
 }
 
 // NewSessionRegistry lists live Codex threads: the processes holding a
@@ -29,7 +31,7 @@ func NewSessionRegistry(locksDir, sessionsDir string, logger *slog.Logger) *lock
 	idx := &threadIndex{
 		sessionsDir: sessionsDir,
 		logger:      logger.With("module", "codex-sessions"),
-		metas:       map[string]sessionMeta{},
+		heads:       map[string]rolloutHead{},
 	}
 
 	return lockfs.NewRegistry(locksDir, registryTTL, idx.build)
@@ -39,7 +41,7 @@ func (x *threadIndex) build(_ *lockfs.Lister, holders []lockfs.Holder) ([]domain
 	sessions := make([]domain.Session, 0, len(holders))
 
 	for _, h := range holders {
-		meta, err := x.meta(h.ID)
+		head, err := x.head(h.ID)
 		if err != nil {
 			// A thread whose transcript is not there yet has run nothing;
 			// it shows up once the file appears.
@@ -48,7 +50,7 @@ func (x *threadIndex) build(_ *lockfs.Lister, holders []lockfs.Holder) ([]domain
 			continue
 		}
 
-		if meta.isSubagent() {
+		if head.meta.isSubagent() {
 			continue
 		}
 
@@ -56,30 +58,31 @@ func (x *threadIndex) build(_ *lockfs.Lister, holders []lockfs.Holder) ([]domain
 			Provider:  domain.ProviderCodex,
 			ID:        h.ID,
 			PID:       h.PID,
-			Dir:       meta.CWD,
-			StartedAt: meta.StartedAt,
+			Dir:       head.meta.CWD,
+			Title:     head.firstPrompt,
+			StartedAt: head.meta.StartedAt,
 		})
 	}
 
 	return sessions, nil
 }
 
-func (x *threadIndex) meta(threadID string) (sessionMeta, error) {
-	if m, ok := x.metas[threadID]; ok {
-		return m, nil
+func (x *threadIndex) head(threadID string) (rolloutHead, error) {
+	if h, ok := x.heads[threadID]; ok && h.firstPrompt != "" {
+		return h, nil
 	}
 
 	path, err := findRollout(x.sessionsDir, threadID)
 	if err != nil {
-		return sessionMeta{}, err
+		return rolloutHead{}, err
 	}
 
-	m, err := readMeta(path)
+	h, err := readHead(path)
 	if err != nil {
-		return sessionMeta{}, err
+		return rolloutHead{}, err
 	}
 
-	x.metas[threadID] = m
+	x.heads[threadID] = h
 
-	return m, nil
+	return h, nil
 }

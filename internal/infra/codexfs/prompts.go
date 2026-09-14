@@ -131,19 +131,15 @@ func (c *PromptCounter) count(midnight time.Time, day string) int {
 // isPromptOn reports whether the line is a user prompt sent on the given day.
 func isPromptOn(line []byte, day string, loc *time.Location) bool {
 	var rec record
-	if err := json.Unmarshal(line, &rec); err != nil || rec.Type != recResponse {
+	if err := json.Unmarshal(line, &rec); err != nil {
+		return false
+	}
+
+	if _, ok := userPrompt(rec); !ok {
 		return false
 	}
 
 	ts, err := parseTimestamp(rec.Timestamp)
-	if err != nil || ts.In(loc).Format(dayLayout) != day {
-		return false
-	}
 
-	var msg messagePayload
-	if err := json.Unmarshal(rec.Payload, &msg); err != nil || msg.Type != itemMessage || msg.Role != roleUser {
-		return false
-	}
-
-	return len(msg.Content) > 0 && msg.Content[0].Text != "" && !strings.HasPrefix(msg.Content[0].Text, injectedPrefix)
+	return err == nil && ts.In(loc).Format(dayLayout) == day
 }
