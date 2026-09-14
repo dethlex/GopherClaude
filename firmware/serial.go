@@ -4,8 +4,11 @@ import "machine"
 
 // machine.Serial on the Gopher Badge is USB CDC: it is initialized before
 // main() and ReadByte never blocks (returns an error when the RX ring is
-// empty). The RX ring is 512 bytes, so the main loop must drain it often.
-const lineBufSize = 512
+// empty). The driver's RX ring holds 512 bytes and drops what does not fit,
+// so the main loop drains it on every pass and the host paces its writes
+// to that. lineBuf assembles one frame; the worst case (32 sessions with
+// the longest texts) is about 3.5 KB.
+const lineBufSize = 4096
 
 var (
 	lineBuf [lineBufSize]byte

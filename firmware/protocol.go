@@ -18,18 +18,23 @@ import (
 // An assistant is present exactly when its group arrives; an empty field
 // means Claude alone. Percentages are 0..100, or -1 when the host could not
 // obtain the value.
-// <sessions> = name~phase~minutes~ctx_tokens~provider entries joined by ';',
-// phase is one of P (permission), I (input), W (working); provider C, A or X.
+// <sessions> = label~phase~minutes~ctx_tokens~provider~title~path entries
+// joined by ';', up to maxSessions of them, waits first; phase is one of P
+// (permission), I (input), W (working); provider C, A or X. label is the row
+// text, title and path (may be empty) fill the banner for the highlighted
+// row; the host already cut them to the badge's widths.
 const (
-	framePrefix = "CC6"
+	framePrefix = "CC7"
 	frameFields = 15
 
 	pctUnknown = -1
 
-	maxSessions      = 8
+	// The list page shows 7 rows; 32 entries are four pages and change,
+	// and the most the line buffer is sized for.
+	maxSessions      = 32
 	sessionSep       = ";"
 	sessionFieldSep  = "~"
-	sessionFieldsNum = 5
+	sessionFieldsNum = 7
 
 	// The combined view fits four provider rows, so three assistants may
 	// come on top of Claude; a group beyond that is dropped, not an error.
@@ -47,6 +52,8 @@ type sessionRow struct {
 	mins  int
 	ctx   uint64
 	prov  byte
+	title string
+	path  string
 }
 
 // providerStats is one secondary assistant's block of the frame.
@@ -253,6 +260,8 @@ func parseSessions(s string) []sessionRow {
 			mins:  mins,
 			ctx:   ctx,
 			prov:  fields[4][0],
+			title: fields[5],
+			path:  fields[6],
 		})
 	}
 
