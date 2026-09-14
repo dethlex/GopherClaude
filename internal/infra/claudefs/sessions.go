@@ -45,6 +45,9 @@ type sessionFile struct {
 	CWD       string `json:"cwd"`
 	Kind      string `json:"kind"`
 	Status    string `json:"status"`
+	// Name is Claude Code's handle for the session: derived ("t10s-36")
+	// or set by the user with /rename.
+	Name      string `json:"name"`
 	StartedAt int64  `json:"startedAt"`
 }
 
@@ -100,6 +103,7 @@ func (r *SessionRegistry) Sessions() ([]domain.Session, error) {
 			ID:        sf.SessionID,
 			PID:       sf.PID,
 			Dir:       sf.CWD,
+			Name:      sf.Name,
 			Idle:      sf.Status == statusIdle || sf.Status == statusWaiting,
 			StartedAt: time.UnixMilli(sf.StartedAt),
 		})

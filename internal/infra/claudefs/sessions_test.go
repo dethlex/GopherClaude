@@ -18,7 +18,7 @@ func TestSessionRegistry(t *testing.T) {
 	dir := t.TempDir()
 
 	writeSessionFile(t, dir, "100.json",
-		`{"pid":100,"sessionId":"alive","cwd":"/Users/x/proj","kind":"interactive","startedAt":1781198322264}`)
+		`{"pid":100,"sessionId":"alive","cwd":"/Users/x/proj","kind":"interactive","startedAt":1781198322264,"name":"proj-0c","nameSource":"derived"}`)
 	writeSessionFile(t, dir, "200.json",
 		`{"pid":200,"sessionId":"dead","cwd":"/Users/x/proj","kind":"interactive","startedAt":1}`)
 	writeSessionFile(t, dir, "300.json",
@@ -39,8 +39,8 @@ func TestSessionRegistry(t *testing.T) {
 		t.Fatalf("Sessions() returned %d, want 1 (alive, interactive, deduped)", len(sessions))
 	}
 
-	if sessions[0].ID != "alive" || sessions[0].Dir != "/Users/x/proj" {
-		t.Errorf("Sessions()[0] = %+v", sessions[0])
+	if sessions[0].ID != "alive" || sessions[0].Dir != "/Users/x/proj" || sessions[0].Name != "proj-0c" {
+		t.Errorf("Sessions()[0] = %+v, want the registry name proj-0c", sessions[0])
 	}
 }
 
