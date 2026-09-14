@@ -6,13 +6,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
 )
 
 // Wire format, one frame per line (firmware/protocol.go is the peer):
 //
-//	CC6|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
+//	CC7|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
 //
 // The fixed block is Claude Code. <extras> lists every other installed
 // assistant as a repeated group, groups joined by ';':
@@ -26,14 +27,30 @@ import (
 // clock. The ETA column is non-empty only when the 5-hour limit will run out
 // before its reset at the current burn rate.
 //
-// <sessions> lists up to 8 rows for the badge's session page, all providers
-// merged:
+// <sessions> lists up to domain.MaxSessionRows rows for the badge's session
+// page, all providers merged, waits first:
 //
-//	name~phase~minutes~ctx_tokens~provider(;next)*   phase: P|I|W  provider: C|A|X
+//	label~phase~minutes~ctx_tokens~provider~title~path(;next)*   phase: P|I|W  provider: C|A|X
+//
+// label (≤14 bytes) is the row text; title (≤28) and path (≤28) fill the
+// banner for the highlighted row. The badge has no ellipsis glyph and
+// cannot measure, so the host shortens the path itself ("../src/machine").
 const (
-	framePrefix = "CC6"
+	framePrefix = "CC7"
 	maxMsgLen   = 24
 	maxNameLen  = 14
+	// One banner line of the badge's 9pt monospace font.
+	maxTitleLen = 28
+	maxPathLen  = 28
+
+	// A Cyrillic letter transliterates to at most this many ASCII bytes
+	// ("щ" → "shch"); sanitizeAll sizes its pass by it.
+	maxTranslitExpansion = 4
+
+	// pathCutMark opens a shortened path. "~" for the home directory is
+	// out: it is the field separator.
+	pathCutMark = ".."
+	pathSep     = "/"
 
 	asciiPrintableMin = 0x20
 	asciiPrintableMax = 0x7e
@@ -117,6 +134,8 @@ func encodeExtras(extras []domain.ProviderStats, now time.Time) string {
 	return strings.Join(groups, sessionSep)
 }
 
+// encodeSessions renders the list rows; the path is sanitized before it is
+// shortened so the cut measures the bytes the badge will draw.
 func encodeSessions(sessions []domain.SessionBrief) string {
 	var b strings.Builder
 
@@ -134,9 +153,37 @@ func encodeSessions(sessions []domain.SessionBrief) string {
 		b.WriteString(strconv.FormatUint(sess.CtxTokens, 10))
 		b.WriteString(fieldSep)
 		b.WriteByte(providerLetter(sess.Provider))
+		b.WriteString(fieldSep)
+		b.WriteString(sanitize(sess.Title, maxTitleLen))
+		b.WriteString(fieldSep)
+		b.WriteString(shortenPath(sanitizeAll(sess.Path), maxPathLen))
 	}
 
 	return b.String()
+}
+
+// shortenPath fits a directory into max bytes: leading components are
+// dropped until the rest fits, marked "../"; a last component that is still
+// too long is cut from the left.
+func shortenPath(path string, max int) string {
+	if len(path) <= max {
+		return path
+	}
+
+	parts := strings.Split(path, pathSep)
+	for len(parts) > 1 {
+		parts = parts[1:]
+
+		candidate := pathCutMark + pathSep + strings.Join(parts, pathSep)
+		if len(candidate) <= max {
+			return candidate
+		}
+	}
+
+	last := parts[0]
+	keep := max - len(pathCutMark)
+
+	return pathCutMark + last[len(last)-keep:]
 }
 
 func phaseLetter(p domain.Phase) byte {
@@ -224,6 +271,23 @@ func sanitizeName(name string) string {
 	return sanitize(name, maxNameLen)
 }
 
+// translit maps Cyrillic to ASCII: the badge fonts are 7-bit and a session
+// renamed in Russian used to show as a row of question marks. Hard and soft
+// signs vanish; a capital letter capitalises its first output letter.
+var translit = map[rune]string{
+	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "yo",
+	'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",
+	'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
+	'ф': "f", 'х': "kh", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "shch",
+	'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
+}
+
+// sanitizeAll sanitizes with no limit beyond what transliteration can
+// expand the input to; callers that need a cut measure the result.
+func sanitizeAll(s string) string {
+	return sanitize(s, len(s)*maxTranslitExpansion)
+}
+
 func sanitize(s string, maxLen int) string {
 	var b strings.Builder
 
@@ -240,9 +304,29 @@ func sanitize(s string, maxLen int) string {
 		case r >= asciiPrintableMin && r <= asciiPrintableMax:
 			b.WriteRune(r)
 		default:
-			b.WriteByte('?')
+			b.WriteString(transliterate(r))
 		}
 	}
 
-	return b.String()
+	out := b.String()
+	if len(out) > maxLen {
+		out = out[:maxLen] // a multi-letter transliteration may overshoot
+	}
+
+	return out
+}
+
+// transliterate renders one non-ASCII rune: its Latin spelling for Cyrillic,
+// "?" for everything else.
+func transliterate(r rune) string {
+	latin, ok := translit[unicode.ToLower(r)]
+	if !ok {
+		return "?"
+	}
+
+	if unicode.IsUpper(r) && latin != "" {
+		return strings.ToUpper(latin[:1]) + latin[1:]
+	}
+
+	return latin
 }
