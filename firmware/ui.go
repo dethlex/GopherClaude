@@ -30,7 +30,10 @@ import (
 //
 // ALL view: "✳ ✦ ⬡ ALL", summed CHATS/WAIT, then one row per provider with
 // its mark and two half-width bars (5H left, WK right).
-// Sessions page: one row per session across providers, provider mark first.
+// Sessions page: the sessions of the view the list was opened from (every
+// provider from ALL), seven per page; the cursor walks the whole filtered
+// list and wraps, the header counts pages ("SESSIONS 2/3") and the banner
+// shows the highlighted session's title and path.
 //
 // With a single assistant installed the badge drops everything about the
 // others: no view to switch to and no mark column in the session list.
@@ -108,6 +111,15 @@ const (
 	sessNameWideChars = 14
 	sessRowTopPad     = 16
 
+	// Header title slot: from the last provider mark to the spinner;
+	// headerH covers the Bold9pt ascent and descent around headerBaseline.
+	headerH = 24
+
+	// Session-list banner: two Regular9pt lines (title, path) inside the
+	// bannerTop..screenH band.
+	bannerLine1Baseline = bannerTop + 14
+	bannerLine2Baseline = bannerTop + 30
+
 	pageDashboard = 0
 	pageSessions  = 1
 
@@ -163,8 +175,18 @@ var (
 	// Label baselines of a provider view; a bar goes barOffset below.
 	rows3 = [3]int16{barsTop + 20, barsTop + 54, barsTop + 88}
 
-	// selRow is the highlighted row on the session list page; A opens it.
+	// selRow is the cursor on the session list page: an index into the
+	// filtered list (listRows), not a screen row. A opens that session.
 	selRow int
+
+	// titleX is where the header title starts, right after the provider
+	// marks drawStaticUI painted; renderTitle repaints from there.
+	titleX int16
+
+	// listRows indexes f.sessions for the rows the list filter keeps, in
+	// frame order; listCount is how many are filled. Rebuilt per render.
+	listRows  [maxSessions]int
+	listCount int
 
 	// drawnProviders is the assistant set the current chrome was drawn
 	// for, so a host that gains or loses one triggers a full repaint.
@@ -185,6 +207,7 @@ var (
 // uiCache keeps the last drawn value per region so render only repaints
 // regions whose content actually changed (avoids flicker on the slow SPI bus).
 type uiCache struct {
+	title    string
 	counts   string
 	rows     [maxBarRows]string
 	usage    string
@@ -238,13 +261,19 @@ func providersOf(f frame) providerSet {
 	return set
 }
 
-// viewTitle names the current dashboard view (or the sessions page).
+// viewTitle names the current dashboard view, or the sessions page with its
+// page counter once there are multiple pages.
 func viewTitle() string {
-	if activePage == pageSessions {
+	if activePage != pageSessions {
+		return providerTitle(views[activeView])
+	}
+
+	pages := listPages()
+	if pages < 2 {
 		return "SESSIONS"
 	}
 
-	return providerTitle(views[activeView])
+	return "SESSIONS " + strconv.Itoa(listPage()+1) + "/" + strconv.Itoa(pages)
 }
 
 // providerTitle names a dashboard view by its letter.
@@ -261,15 +290,12 @@ func providerTitle(p byte) string {
 	}
 }
 
-// headerShowsMark decides which provider marks precede the title: a provider
-// view is marked by its own assistant, while ALL and the session list mark
-// every assistant the host monitors.
+// headerShowsMark decides which provider marks precede the title: the
+// current view's assistant, every assistant on ALL. The session list
+// follows the view it was opened from, so the mark doubles as its filter
+// indicator.
 func headerShowsMark(prov byte) bool {
-	if activePage == pageSessions || views[activeView] == viewAllMark {
-		return true
-	}
-
-	return views[activeView] == prov
+	return views[activeView] == prov || views[activeView] == viewAllMark
 }
 
 // buildViews lists the dashboard views the frame allows: Claude, each extra
@@ -328,7 +354,7 @@ func drawStaticUI(f frame) {
 		x += markSize + markGap
 	}
 
-	tinyfont.WriteLine(&display, &freemono.Bold9pt7b, x, headerBaseline, viewTitle(), colTitle)
+	titleX = x
 
 	if activePage != pageDashboard {
 		return
@@ -346,6 +372,20 @@ func drawStaticUI(f frame) {
 			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows3[i], label, colLabel)
 		}
 	}
+}
+
+// renderTitle paints the header title when it changes: on the session list
+// it carries the page counter, which moves with the cursor.
+func renderTitle() {
+	title := viewTitle()
+	if drawn.valid && drawn.title == title {
+		return
+	}
+
+	display.FillRectangle(titleX, 0, spinnerX-titleX, headerH, colBg)
+	tinyfont.WriteLine(&display, &freemono.Bold9pt7b, titleX, headerBaseline, title, colTitle)
+
+	drawn.title = title
 }
 
 // drawAllLabels paints the combined view's chrome: per provider row its mark,
@@ -476,6 +516,7 @@ func switchView(f frame, linked bool, delta int) {
 	}
 
 	activeView = (activeView + delta + viewCount) % viewCount
+	selRow = 0 // the list filter follows the view, so its cursor restarts
 	repaintAll(f, linked)
 }
 
@@ -487,12 +528,8 @@ func render(f frame, linked bool) {
 		renderSessions(f, linked)
 	}
 
-	banner, bannerBg, bannerFg := bannerContent(f, linked)
-	if !drawn.valid || drawn.banner != banner {
-		display.FillRectangle(0, bannerTop, screenW, bannerH, bannerBg)
-		writeCentered(&freemono.Bold12pt7b, 0, screenW, bannerBaseline, banner, bannerFg)
-		drawn.banner = banner
-	}
+	renderTitle()
+	renderBanner(f, linked)
 
 	if !drawn.valid || drawn.linked != linked {
 		dotColor := colBad
@@ -509,6 +546,41 @@ func render(f frame, linked bool) {
 	}
 
 	drawn.valid = true
+}
+
+// renderBanner paints the bottom band: on the session list the highlighted
+// session's title and path, elsewhere the alert message. The details key
+// carries a newline no host message can (frames are printable ASCII), so
+// the two never collide in the cache.
+func renderBanner(f frame, linked bool) {
+	if activePage == pageSessions && linked && listCount > 0 {
+		s := f.sessions[listRows[selRow]]
+
+		title := s.title
+		if title == "" {
+			title = s.name
+		}
+
+		key := title + "\n" + s.path
+		if drawn.valid && drawn.banner == key {
+			return
+		}
+
+		display.FillRectangle(0, bannerTop, screenW, bannerH, colBanner)
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, bannerLine1Baseline, title, colValue)
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, bannerLine2Baseline, s.path, colDim)
+
+		drawn.banner = key
+
+		return
+	}
+
+	banner, bannerBg, bannerFg := bannerContent(f, linked)
+	if !drawn.valid || drawn.banner != banner {
+		display.FillRectangle(0, bannerTop, screenW, bannerH, bannerBg)
+		writeCentered(&freemono.Bold12pt7b, 0, screenW, bannerBaseline, banner, bannerFg)
+		drawn.banner = banner
+	}
 }
 
 func renderDashboard(f frame, linked bool) {
@@ -635,12 +707,14 @@ func renderUsage(text string) {
 }
 
 func renderSessions(f frame, linked bool) {
-	clampSelection(f)
+	buildList(f)
+	clampSelection()
 
 	rows := sessionLines(f, linked)
+	cursor := selRow % sessRowsMax
 
 	for i := 0; i < sessRowsMax; i++ {
-		selected := i == selRow && rowSelectable(f, i)
+		selected := i == cursor && rowSelectable(i)
 
 		// The selection flag and the provider are part of the cache key
 		// so moving the cursor repaints both the old and the new row,
@@ -669,7 +743,7 @@ func renderSessions(f frame, linked bool) {
 			continue
 		}
 
-		// Rows without a provider ("no sessions", "+N more") keep the
+		// Rows without a provider ("no sessions") keep the
 		// left margin so the list stays visually aligned.
 		textX := int16(barX)
 		if drawProviderMark(rows[i].prov, barX, y-markSize) {
@@ -682,27 +756,49 @@ func renderSessions(f frame, linked bool) {
 	}
 }
 
-// visibleSessionRows is how many real session rows the list shows (the last
-// slot becomes a "+N more" summary when there are too many to fit).
-func visibleSessionRows(f frame) int {
-	n := len(f.sessions)
-	if n > sessRowsMax {
-		return sessRowsMax - 1
+// listFilter is the provider the session list shows: the dashboard view the
+// user came from, viewAllMark for everyone. With one assistant installed
+// the only view is Claude, which is everything anyway.
+func listFilter() byte {
+	return views[activeView]
+}
+
+// buildList collects the frame's sessions the filter keeps, in frame order:
+// the host sorts waits first, so they stay on the first page.
+func buildList(f frame) {
+	filter := listFilter()
+	listCount = 0
+
+	for i := range f.sessions {
+		if filter != viewAllMark && f.sessions[i].prov != filter {
+			continue
+		}
+
+		listRows[listCount] = i
+		listCount++
 	}
-
-	return n
 }
 
-func rowSelectable(f frame, i int) bool {
-	return i < visibleSessionRows(f)
+func listPages() int {
+	return (listCount + sessRowsMax - 1) / sessRowsMax
 }
 
-// clampSelection keeps the cursor on a real, selectable row as the list grows
-// and shrinks.
-func clampSelection(f frame) {
-	max := visibleSessionRows(f)
-	if selRow >= max {
-		selRow = max - 1
+// listPage is the page the cursor is on; the rows before it are scrolled
+// away rather than summarised.
+func listPage() int {
+	return selRow / sessRowsMax
+}
+
+// rowSelectable reports whether screen row i holds a session on this page.
+func rowSelectable(i int) bool {
+	return listPage()*sessRowsMax+i < listCount
+}
+
+// clampSelection keeps the cursor on a real row as the list grows and
+// shrinks.
+func clampSelection() {
+	if selRow >= listCount {
+		selRow = listCount - 1
 	}
 
 	if selRow < 0 {
@@ -710,10 +806,18 @@ func clampSelection(f frame) {
 	}
 }
 
-// moveSelection shifts the cursor by delta within the selectable rows.
+// moveSelection steps the cursor through the whole filtered list, wrapping
+// at both ends: walking past the page's last row opens the next page.
 func moveSelection(f frame, delta int) {
-	selRow += delta
-	clampSelection(f)
+	buildList(f)
+
+	if listCount == 0 {
+		selRow = 0
+
+		return
+	}
+
+	selRow = (selRow + delta + listCount) % listCount
 }
 
 type sessLine struct {
@@ -722,37 +826,31 @@ type sessLine struct {
 	prov  byte
 }
 
-// sessionLines lays the session rows out as fixed-width text (the font is
+// sessionLines lays the current page out as fixed-width text (the font is
 // monospace): "NAME........ P MMMm CTX" — name, phase, minutes, context. The
 // provider is drawn as a mark in front of the text, not written into it.
 func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 	var rows [sessRowsMax]sessLine
 
-	if !linked || len(f.sessions) == 0 {
+	if !linked || listCount == 0 {
 		rows[0] = sessLine{text: "no sessions", color: colDim}
 
 		return rows
 	}
 
-	visible := len(f.sessions)
-	more := 0
-
-	if visible > sessRowsMax {
-		visible = sessRowsMax - 1
-		more = len(f.sessions) - visible
-	}
-
-	// The provider column is only worth its width with two or more
-	// assistants installed; alone, every row would carry the same mark.
-	multi := f.providerCount() >= 2
+	// The provider column is only worth its width on the combined list
+	// with multiple assistants; a filtered list would repeat one mark.
+	multi := listFilter() == viewAllMark && f.providerCount() >= 2
 
 	nameChars := sessNameChars
 	if !multi {
 		nameChars = sessNameWideChars
 	}
 
-	for i := 0; i < visible; i++ {
-		s := f.sessions[i]
+	start := listPage() * sessRowsMax
+
+	for i := 0; i < sessRowsMax && start+i < listCount; i++ {
+		s := f.sessions[listRows[start+i]]
 
 		mins := "-"
 		if s.mins > 0 {
@@ -771,13 +869,6 @@ func sessionLines(f frame, linked bool) [sessRowsMax]sessLine {
 
 		if multi {
 			rows[i].prov = s.prov
-		}
-	}
-
-	if more > 0 {
-		rows[sessRowsMax-1] = sessLine{
-			text:  "+" + strconv.Itoa(more) + " more",
-			color: colDim,
 		}
 	}
 

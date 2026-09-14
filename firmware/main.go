@@ -169,11 +169,12 @@ func main() {
 			touch(now)
 
 			// Open a chat on the Mac. On the session list, open the
-			// highlighted row; on the dashboard, the alerting one.
-			// Muting lives on button B / lay-flat.
+			// highlighted row by its index in the frame (the list is
+			// filtered and paged locally); on the dashboard, the
+			// alerting one. Muting lives on button B / lay-flat.
 			switch {
-			case activePage == pageSessions && visibleSessionRows(state) > 0:
-				sendCommand("focus " + strconv.Itoa(selRow))
+			case activePage == pageSessions && listCount > 0:
+				sendCommand("focus " + strconv.Itoa(listRows[selRow]))
 			case activePage == pageDashboard && state.totalWait() > 0:
 				sendCommand("focus")
 			}
