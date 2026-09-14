@@ -507,3 +507,62 @@ func TestReadHeadScanIsBounded(t *testing.T) {
 		t.Errorf("readHead = %+v, want the meta and no prompt", head)
 	}
 }
+
+// An untitled thread is read again only when its rollout grew: the registry
+// rebuilds every 10 s and must not glob and rescan a static file each time.
+func TestSessionRegistryRereadsUntitledThreadOnlyWhenRolloutGrows(t *testing.T) {
+	sessionsDir := t.TempDir()
+	meta := metaLine("2026-09-12T09:30:00.000Z", threadTerminal, "/Users/x/proj-b", `"cli"`)
+	filler := eventLine("2026-09-12T09:30:01.000Z", "agent_reasoning", `"text":"`+strings.Repeat("x", 200)+`"`)
+
+	// A prompt line of exactly the filler's length: swapping one for the
+	// other rewrites the file without changing its size.
+	padding := len(filler) - len(userLine("2026-09-12T09:30:01.000Z", ""))
+	prompt := strings.Repeat("y", padding)
+	promptLine := userLine("2026-09-12T09:30:01.000Z", prompt)
+
+	if len(promptLine) != len(filler) {
+		t.Fatalf("fixture: prompt line is %d bytes, filler %d", len(promptLine), len(filler))
+	}
+
+	path := writeRollout(t, sessionsDir, "2026-09-12", threadTerminal, meta, filler)
+
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+
+	r := NewSessionRegistry("/locks", sessionsDir, discardLogger())
+	r.Now = func() time.Time { return now }
+	r.Run = func(...string) ([]byte, error) {
+		return []byte("p4242\nn/Users/x/.codex/thread-writer-locks/" + threadTerminal + ".lock\n"), nil
+	}
+
+	if sessions, err := r.Sessions(); err != nil || len(sessions) != 1 || sessions[0].Title != "" {
+		t.Fatalf("Sessions = %+v, %v; want one untitled thread", sessions, err)
+	}
+
+	if err := os.WriteFile(path, []byte(meta+"\n"+promptLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(registryTTL + time.Second)
+
+	if sessions, err := r.Sessions(); err != nil || sessions[0].Title != "" {
+		t.Fatalf("Sessions after a same-size rewrite = %+v, %v; want no re-read", sessions, err)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.WriteString(eventLine("2026-09-12T09:30:02.000Z", "task_started", "") + "\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Close()
+
+	now = now.Add(registryTTL + time.Second)
+
+	if sessions, err := r.Sessions(); err != nil || sessions[0].Title != prompt {
+		t.Fatalf("Sessions after growth = %+v, %v; want the prompt the rewrite brought", sessions, err)
+	}
+}

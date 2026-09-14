@@ -266,8 +266,8 @@ func TestSanitizeTransliterates(t *testing.T) {
 		t.Errorf("sanitize(щ×10, %d) = %q (%d bytes)", maxNameLen, got, len(got))
 	}
 
-	if got := sanitizeAll("путь/к/проекту"); got != "put/k/proektu" {
-		t.Errorf("sanitizeAll = %q, want %q", got, "put/k/proektu")
+	if got := sanitizeUnbounded("путь/к/проекту"); got != "put/k/proektu" {
+		t.Errorf("sanitizeUnbounded = %q, want %q", got, "put/k/proektu")
 	}
 }
 
@@ -321,5 +321,17 @@ func TestEncodeWorstCaseFitsBadgeBuffer(t *testing.T) {
 
 	if len(line) > badgeLineBufSize*9/10 {
 		t.Errorf("worst-case frame = %d bytes, less than 10%% headroom under %d", len(line), badgeLineBufSize)
+	}
+}
+
+// A label that sanitizes to nothing (soft and hard signs only) still needs
+// a row on the badge: an empty first field is skipped by the parser and
+// every later focus index would point one row off.
+func TestEncodeSessionsNeverSendsEmptyLabel(t *testing.T) {
+	got := encodeSessions([]domain.SessionBrief{{Name: "ьъ", Phase: domain.PhaseWorking}})
+	want := "?~W~0~0~C~~"
+
+	if got != want {
+		t.Errorf("encodeSessions(empty label) = %q, want %q", got, want)
 	}
 }

@@ -40,8 +40,10 @@ const (
 	// The badge receives over TinyGo's USB CDC: a 512-byte ring with no
 	// flow control (what does not fit is dropped) drained every 10 ms by
 	// its main loop. A CC7 frame runs to a few kilobytes, so it goes out
-	// in pieces small enough for two of them to sit in the ring while the
-	// badge is busy repainting.
+	// in 128-byte pieces 10 ms apart: four chunks fit the 512-byte ring (a
+	// 40 ms stall budget); a repaintAll from a button press mid-transmission
+	// can still tear one frame, which the next frame repairs within the
+	// 10 s link timeout.
 	frameChunkSize  = 128
 	frameChunkPause = 10 * time.Millisecond
 )

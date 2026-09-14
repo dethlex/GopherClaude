@@ -82,6 +82,11 @@ type sessionMeta struct {
 type rolloutHead struct {
 	meta        sessionMeta
 	firstPrompt string
+	// path is where findRollout found the file, so a later re-read skips
+	// the glob; scanned is the file size at that read: only a bigger file
+	// can hold a prompt the last pass missed.
+	path    string
+	scanned int64
 }
 
 // isSubagent reports whether the thread belongs to another thread rather
@@ -157,6 +162,11 @@ func readHead(path string) (rolloutHead, error) {
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return rolloutHead{}, err
+	}
+
 	reader := bufio.NewReaderSize(f, headLineLimit)
 
 	line, err := reader.ReadBytes('\n')
@@ -179,6 +189,8 @@ func readHead(path string) (rolloutHead, error) {
 	}
 
 	head.meta.StartedAt, _ = parseTimestamp(rec.Timestamp)
+	head.path = path
+	head.scanned = info.Size()
 
 	scanner := bufio.NewScanner(io.LimitReader(reader, headScanLimit))
 	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), headLineLimit)

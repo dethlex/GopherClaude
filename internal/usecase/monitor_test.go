@@ -287,3 +287,12 @@ func TestFoldSpace(t *testing.T) {
 		t.Errorf("foldSpace(blank) = %q, want empty", got)
 	}
 }
+
+// A blank registry name is no name: the row falls back to the project so
+// the badge never receives an empty label (it would drop the row and shift
+// every later focus index).
+func TestRowLabelFallsBackFromBlankName(t *testing.T) {
+	if got := rowLabel(domain.Session{Dir: "/Users/x/proj", Name: " \t "}); got != "proj" {
+		t.Errorf("rowLabel(blank name) = %q, want %q", got, "proj")
+	}
+}

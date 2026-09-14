@@ -263,13 +263,13 @@ func providersOf(f frame) providerSet {
 
 // viewTitle names the current dashboard view, or the sessions page with its
 // page counter once there are multiple pages.
-func viewTitle() string {
+func viewTitle(linked bool) string {
 	if activePage != pageSessions {
 		return providerTitle(views[activeView])
 	}
 
 	pages := listPages()
-	if pages < 2 {
+	if !linked || pages < 2 {
 		return "SESSIONS"
 	}
 
@@ -376,8 +376,8 @@ func drawStaticUI(f frame) {
 
 // renderTitle paints the header title when it changes: on the session list
 // it carries the page counter, which moves with the cursor.
-func renderTitle() {
-	title := viewTitle()
+func renderTitle(linked bool) {
+	title := viewTitle(linked)
 	if drawn.valid && drawn.title == title {
 		return
 	}
@@ -528,7 +528,7 @@ func render(f frame, linked bool) {
 		renderSessions(f, linked)
 	}
 
-	renderTitle()
+	renderTitle(linked)
 	renderBanner(f, linked)
 
 	if !drawn.valid || drawn.linked != linked {
@@ -810,6 +810,7 @@ func clampSelection() {
 // at both ends: walking past the page's last row opens the next page.
 func moveSelection(f frame, delta int) {
 	buildList(f)
+	clampSelection()
 
 	if listCount == 0 {
 		selRow = 0

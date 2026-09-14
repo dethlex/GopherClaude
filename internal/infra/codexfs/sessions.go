@@ -2,6 +2,7 @@ package codexfs
 
 import (
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
@@ -15,7 +16,7 @@ const registryTTL = 10 * time.Second
 // threadIndex maps live threads to their rollout's head. The first record
 // never changes; the first prompt may not exist yet when the thread appears
 // (Desktop opens a thread before the first message), so a head without one
-// is read again on the next build.
+// is read again on a later build only when the rollout file grew.
 type threadIndex struct {
 	sessionsDir string
 	logger      *slog.Logger
@@ -68,8 +69,28 @@ func (x *threadIndex) build(_ *lockfs.Lister, holders []lockfs.Holder) ([]domain
 }
 
 func (x *threadIndex) head(threadID string) (rolloutHead, error) {
-	if h, ok := x.heads[threadID]; ok && h.firstPrompt != "" {
-		return h, nil
+	if h, ok := x.heads[threadID]; ok {
+		if h.firstPrompt != "" || h.scanned >= headScanLimit {
+			return h, nil
+		}
+
+		info, err := os.Stat(h.path)
+		if err != nil {
+			return rolloutHead{}, err
+		}
+
+		if info.Size() <= h.scanned {
+			return h, nil
+		}
+
+		head, err := readHead(h.path)
+		if err != nil {
+			return rolloutHead{}, err
+		}
+
+		x.heads[threadID] = head
+
+		return head, nil
 	}
 
 	path, err := findRollout(x.sessionsDir, threadID)
@@ -77,12 +98,12 @@ func (x *threadIndex) head(threadID string) (rolloutHead, error) {
 		return rolloutHead{}, err
 	}
 
-	h, err := readHead(path)
+	head, err := readHead(path)
 	if err != nil {
 		return rolloutHead{}, err
 	}
 
-	x.heads[threadID] = h
+	x.heads[threadID] = head
 
-	return h, nil
+	return head, nil
 }

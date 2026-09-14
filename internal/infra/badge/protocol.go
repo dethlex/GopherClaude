@@ -44,8 +44,13 @@ const (
 	maxPathLen  = 28
 
 	// A Cyrillic letter transliterates to at most this many ASCII bytes
-	// ("щ" → "shch"); sanitizeAll sizes its pass by it.
+	// ("щ" → "shch"); sanitizeUnbounded sizes its pass by it.
 	maxTranslitExpansion = 4
+
+	// emptyLabel replaces a row label whose text sanitized to nothing (e.g.
+	// Cyrillic soft/hard signs only): an empty first field is skipped by the
+	// firmware parser and would misalign every later focus index.
+	emptyLabel = "?"
 
 	// pathCutMark opens a shortened path. "~" for the home directory is
 	// out: it is the field separator.
@@ -144,7 +149,12 @@ func encodeSessions(sessions []domain.SessionBrief) string {
 			b.WriteString(sessionSep)
 		}
 
-		b.WriteString(sanitizeName(sess.Name))
+		label := sanitizeName(sess.Name)
+		if label == "" {
+			label = emptyLabel
+		}
+
+		b.WriteString(label)
 		b.WriteString(fieldSep)
 		b.WriteByte(phaseLetter(sess.Phase))
 		b.WriteString(fieldSep)
@@ -156,7 +166,7 @@ func encodeSessions(sessions []domain.SessionBrief) string {
 		b.WriteString(fieldSep)
 		b.WriteString(sanitize(sess.Title, maxTitleLen))
 		b.WriteString(fieldSep)
-		b.WriteString(shortenPath(sanitizeAll(sess.Path), maxPathLen))
+		b.WriteString(shortenPath(sanitizeUnbounded(sess.Path), maxPathLen))
 	}
 
 	return b.String()
@@ -271,20 +281,22 @@ func sanitizeName(name string) string {
 	return sanitize(name, maxNameLen)
 }
 
-// translit maps Cyrillic to ASCII: the badge fonts are 7-bit and a session
-// renamed in Russian used to show as a row of question marks. Hard and soft
-// signs vanish; a capital letter capitalises its first output letter.
-var translit = map[rune]string{
-	'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "yo",
-	'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",
-	'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
-	'ф': "f", 'х': "kh", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "shch",
-	'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
-}
+var (
+	// translit maps Cyrillic to ASCII: the badge fonts are 7-bit and a session
+	// renamed in Russian used to show as a row of question marks. Hard and soft
+	// signs vanish; a capital letter capitalises its first output letter.
+	translit = map[rune]string{
+		'а': "a", 'б': "b", 'в': "v", 'г': "g", 'д': "d", 'е': "e", 'ё': "yo",
+		'ж': "zh", 'з': "z", 'и': "i", 'й': "y", 'к': "k", 'л': "l", 'м': "m",
+		'н': "n", 'о': "o", 'п': "p", 'р': "r", 'с': "s", 'т': "t", 'у': "u",
+		'ф': "f", 'х': "kh", 'ц': "ts", 'ч': "ch", 'ш': "sh", 'щ': "shch",
+		'ъ': "", 'ы': "y", 'ь': "", 'э': "e", 'ю': "yu", 'я': "ya",
+	}
+)
 
-// sanitizeAll sanitizes with no limit beyond what transliteration can
+// sanitizeUnbounded sanitizes with no limit beyond what transliteration can
 // expand the input to; callers that need a cut measure the result.
-func sanitizeAll(s string) string {
+func sanitizeUnbounded(s string) string {
 	return sanitize(s, len(s)*maxTranslitExpansion)
 }
 

@@ -11,7 +11,9 @@ import (
 	"github.com/dethlex/GopherClaude/internal/domain"
 )
 
-const maxPhaseMinutes = 999
+const (
+	maxPhaseMinutes = 999
+)
 
 // ProviderSources are the feeds for one assistant. Plan and Prompts may be nil.
 type ProviderSources struct {
@@ -190,8 +192,8 @@ func sessionList(states []domain.SessionState, now time.Time) ([]domain.SessionB
 // handle when it has one, else the project directory. The banner message
 // uses the same label so the dashboard and the list agree.
 func rowLabel(s domain.Session) string {
-	if s.Name != "" {
-		return foldSpace(s.Name)
+	if name := foldSpace(s.Name); name != "" {
+		return name
 	}
 
 	return filepath.Base(s.Dir)
