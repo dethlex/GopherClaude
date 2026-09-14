@@ -69,11 +69,19 @@ one row of two half-width bars:
   banner and the eyes cover every provider. Only installed assistants get a
   screen: without `~/.gemini/antigravity-cli` or `~/.codex` the badge skips
   that assistant entirely; with a single one ↑/↓ do nothing and the session
-  list drops the provider column in favour of longer project names.
-- **Session list page** — flip pages with the D-pad (left/right) to see every
-  session across all providers: provider mark, project name, phase (`P`
-  waiting for permission, `I` waiting for input, `W` working), minutes in that
-  phase, and context size (`412k`).
+  list drops the provider column in favour of longer project names (the list
+  also drops the column whenever it shows one provider).
+- **Session list page** — flip pages with the D-pad (left/right) to see the
+  sessions of the view you came from: `ALL` lists every provider with its
+  mark, `CODEX` only Codex threads, and so on. Each row is the session's
+  name (Claude Code's own — `t10s-36`, or what you gave it with `/rename`;
+  the project directory for Codex and Antigravity), phase (`P` waiting for
+  permission, `I` waiting for input, `W` working), minutes in that phase and
+  context size (`412k`). Seven rows per page; the cursor walks the whole
+  list and the header counts pages (`SESSIONS 2/3`). The banner shows the
+  highlighted session's title (its first prompt for Codex and Antigravity)
+  and working directory. Cyrillic names are transliterated: the badge fonts
+  are 7-bit.
 - **Jump to a chat** — move the cursor with the D-pad (up/down) and press
   **A**; the agent foregrounds that session's window on the Mac (terminal or
   Claude Desktop). On the dashboard, **A** jumps to the alerting session.
@@ -167,8 +175,8 @@ No badge handy? `make dry-run` prints the protocol frames to the log.
 |---------------------------|---------------------------------------------------------------|
 | **Button A**              | Open a chat on the Mac (dashboard → alerting one; list → selected row) |
 | **Button B**              | Toggle all sound on/off (persisted to flash)                  |
-| **D-pad ← / →**           | Switch page (dashboard ↔ session list)                        |
-| **D-pad ↑ / ↓**           | Dashboard: cycle views (Claude / per assistant / all); list: move the cursor |
+| **D-pad ← / →**           | Switch page (dashboard ↔ session list of the current view)    |
+| **D-pad ↑ / ↓**           | Dashboard: cycle views (Claude / per assistant / all); list: move the cursor, across pages |
 | **Lay flat (screen up)**  | Do-not-disturb: sleep + mute                                  |
 
 ## How it works
@@ -243,7 +251,7 @@ Hooks only take effect for sessions started afterwards.
 One line per frame, fields separated by `|`:
 
 ```
-CC6|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
+CC7|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
 extras = <P>~<chats>~<wait>~<5h_pct>~<5h_reset>~<wk_pct>~<wk_reset>~<prompts>(;…)   P: A (Antigravity) | X (Codex)
 ```
 
@@ -254,9 +262,17 @@ and the badge offers no other screen. The badge sums every block for the
 combined view, alerts and the `CHATS`/`WAIT` echo. Percentages are
 `0..100`, or `-1` when unknown. Reset and ETA columns are host-formatted
 durations (`3h`, `45m`, `2d`) because the badge has no clock. `<sessions>`
-is up to 8 rows of `name~phase~minutes~ctx~provider` joined by `;` (phase
-is `P` / `I` / `W`, provider `C` / `A` / `X`), waits first across all
-providers. Text fields are printable ASCII only — the badge fonts are 7-bit.
+is up to 32 rows of `label~phase~minutes~ctx~provider~title~path` joined by
+`;` (phase is `P` / `I` / `W`, provider `C` / `A` / `X`), waits first across
+all providers; `label` is at most 14 bytes, `title` and `path` 28 each (the
+host shortens the path from the left: `../src/machine`). The badge filters
+and pages the list itself and answers `CMD focus <n>` with the row's index in
+the frame. Frames are a few kilobytes and go out in 128-byte pieces 10 ms
+apart: the badge's USB receive ring is 512 bytes and has no flow control.
+Text fields are printable ASCII only — the badge fonts are 7-bit, Cyrillic is
+transliterated. `title` is a 28-byte excerpt of a thread's first prompt: it
+stays on the USB cable and the badge, but `make dry-run` prints whole frames
+to the log.
 
 The badge echoes `ok chats=N wait=M` per frame (logged at debug level); if no
 frame arrives for 10 seconds it shows `NO LINK`.
@@ -268,7 +284,7 @@ works from the background service.
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and
-bump the `CC6` prefix on incompatible changes so a stale-firmware badge shows
+bump the `CC7` prefix on incompatible changes so a stale-firmware badge shows
 `NO LINK` instead of garbage.
 
 ## Make targets
