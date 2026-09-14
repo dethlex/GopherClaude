@@ -33,6 +33,11 @@ func (p Phase) Waiting() bool {
 	return p == PhaseWaitingInput || p == PhaseWaitingPermission
 }
 
+// MaxSessionRows caps the session list sent to the badge: its list page
+// shows 7 rows and its line buffer is sized for 32 entries of the longest
+// allowed text.
+const MaxSessionRows = 32
+
 type (
 	// Session is one live interactive assistant session on this machine.
 	Session struct {
@@ -40,6 +45,14 @@ type (
 		ID       string
 		PID      int
 		Dir      string
+		// Name is the provider's own short handle for the session (Claude
+		// Code names every session, derived or via /rename); it fits a
+		// list row. Empty when the provider has none.
+		Name string
+		// Title is a free-text description of the session, the first
+		// prompt for Codex and agy threads, which name their threads only
+		// inside sqlite databases the agent never opens. Banner only.
+		Title string
 		// Idle is the provider's own word that the session sits unoccupied
 		// (Claude Code writes an idle/waiting status for cli sessions); it
 		// outranks the transcript heuristic but not a hook event.
@@ -60,8 +73,12 @@ type (
 
 	// SessionBrief is one row of the badge's session list page.
 	SessionBrief struct {
-		Provider  Provider
-		Name      string
+		Provider Provider
+		Name     string // row label: the provider's handle or the project directory
+		// Title and Path describe the highlighted row in the badge's
+		// banner; Title may be empty, Path is the working directory.
+		Title     string
+		Path      string
 		Phase     Phase
 		Minutes   int // time spent in the current phase, 0 when unknown
 		CtxTokens uint64

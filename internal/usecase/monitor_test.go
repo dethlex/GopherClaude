@@ -3,6 +3,8 @@ package usecase
 import (
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +35,7 @@ func TestMonitorSnapshot(t *testing.T) {
 	sessions := []domain.Session{
 		{ID: "s1", Dir: "/Users/x/alpha"},
 		{ID: "s2", Dir: "/Users/x/beta"},
-		{ID: "s3", Dir: "/Users/x/gamma", PID: 4242},
+		{ID: "s3", Dir: "/Users/x/gamma", PID: 4242, Name: "gamma-7f"},
 	}
 
 	base := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
@@ -63,8 +65,8 @@ func TestMonitorSnapshot(t *testing.T) {
 		t.Errorf("Chats/Waiting = %d/%d, want 3/2", got.Chats, got.Waiting)
 	}
 
-	if got.Message != "gamma PERM" {
-		t.Errorf("Message = %q, want %q (most recent waiting session)", got.Message, "gamma PERM")
+	if got.Message != "gamma-7f PERM" {
+		t.Errorf("Message = %q, want %q (most recent waiting session, by its name)", got.Message, "gamma-7f PERM")
 	}
 
 	if got.Usage.Input != 10 || got.Usage.Output != 20 {
@@ -76,8 +78,8 @@ func TestMonitorSnapshot(t *testing.T) {
 	}
 
 	// Permission waits sort first, then input waits, then working.
-	if got.Sessions[0].Name != "gamma" || got.Sessions[0].Phase != domain.PhaseWaitingPermission {
-		t.Errorf("Sessions[0] = %+v, want gamma PERM", got.Sessions[0])
+	if got.Sessions[0].Name != "gamma-7f" || got.Sessions[0].Phase != domain.PhaseWaitingPermission {
+		t.Errorf("Sessions[0] = %+v, want gamma-7f PERM", got.Sessions[0])
 	}
 
 	if got.Sessions[1].Name != "beta" || got.Sessions[2].Name != "alpha" {
@@ -203,5 +205,85 @@ func TestMonitorSnapshotQuiet(t *testing.T) {
 
 	if got.Plan.FiveHour.Pct != domain.UnknownPct {
 		t.Errorf("Plan without a source should be unknown, got %+v", got.Plan)
+	}
+}
+
+// The cap is the badge's: it lists 7 rows per page and its line buffer is
+// sized for 32 entries. Permission waits sort first, so the cut never drops
+// one.
+func TestSessionListCapsAtBadgeRows(t *testing.T) {
+	base := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+
+	states := make([]domain.SessionState, 0, 41)
+	for i := 0; i < 40; i++ {
+		states = append(states, domain.SessionState{
+			Session: domain.Session{ID: "w" + strconv.Itoa(i), Dir: "/Users/x/work" + strconv.Itoa(i)},
+			Phase:   domain.PhaseWorking,
+		})
+	}
+
+	states = append(states, domain.SessionState{
+		Session: domain.Session{ID: "perm", PID: 7, Dir: "/Users/x/perm"},
+		Phase:   domain.PhaseWaitingPermission,
+		Reason:  "PERM",
+		Since:   base,
+	})
+
+	briefs, targets := sessionList(states, base)
+
+	if domain.MaxSessionRows != 32 {
+		t.Errorf("MaxSessionRows = %d, want 32 (firmware maxSessions)", domain.MaxSessionRows)
+	}
+
+	if len(briefs) != domain.MaxSessionRows || len(targets) != domain.MaxSessionRows {
+		t.Fatalf("rows = %d briefs / %d targets, want %d", len(briefs), len(targets), domain.MaxSessionRows)
+	}
+
+	if briefs[0].Name != "perm" || targets[0].PID != 7 {
+		t.Errorf("first row = %+v / %+v, want the permission wait", briefs[0], targets[0])
+	}
+}
+
+func TestSessionListNamesTitlesAndPaths(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+
+	states := []domain.SessionState{
+		// Claude: the registry name labels the row and doubles as the title.
+		{Session: domain.Session{Dir: "/Users/x/go/src/t10s", Name: "fix-prime-minbid"}, Phase: domain.PhaseWorking},
+		// Codex: no handle, so the project labels the row; the first prompt,
+		// its line breaks and runs of spaces folded, is the title.
+		{Session: domain.Session{Provider: domain.ProviderCodex, Dir: "/Users/x/api", Title: "  add   retries\nto the client "}, Phase: domain.PhaseWorking},
+		// Nothing known: project label, no title.
+		{Session: domain.Session{Provider: domain.ProviderAntigravity, Dir: "/Users/x/rotator"}, Phase: domain.PhaseWorking},
+	}
+
+	briefs, _ := sessionList(states, now)
+
+	want := []domain.SessionBrief{
+		{Name: "fix-prime-minbid", Title: "fix-prime-minbid", Path: "/Users/x/go/src/t10s"},
+		{Name: "api", Title: "add retries to the client", Path: "/Users/x/api"},
+		{Name: "rotator", Title: "", Path: "/Users/x/rotator"},
+	}
+
+	if len(briefs) != len(want) {
+		t.Fatalf("rows = %d, want %d", len(briefs), len(want))
+	}
+
+	for i := range want {
+		got := briefs[i]
+		if got.Name != want[i].Name || got.Title != want[i].Title || got.Path != want[i].Path {
+			t.Errorf("row %d = {Name:%q Title:%q Path:%q}, want {Name:%q Title:%q Path:%q}",
+				i, got.Name, got.Title, got.Path, want[i].Name, want[i].Title, want[i].Path)
+		}
+	}
+}
+
+func TestFoldSpace(t *testing.T) {
+	if got := foldSpace(" a \n\n b\tc  "); got != "a b c" {
+		t.Errorf("foldSpace = %q, want %q", got, "a b c")
+	}
+
+	if got := foldSpace(strings.Repeat(" ", 3)); got != "" {
+		t.Errorf("foldSpace(blank) = %q, want empty", got)
 	}
 }

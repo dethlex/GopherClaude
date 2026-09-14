@@ -5,18 +5,13 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
 )
 
-const (
-	// maxSessionRows caps the session list sent to the badge; its list page
-	// cannot show more anyway.
-	maxSessionRows = 8
-
-	maxPhaseMinutes = 999
-)
+const maxPhaseMinutes = 999
 
 // ProviderSources are the feeds for one assistant. Plan and Prompts may be nil.
 type ProviderSources struct {
@@ -83,7 +78,7 @@ func (m *Monitor) Snapshot(now time.Time) domain.Snapshot {
 	}
 
 	if newest := newestWaiting(all); newest != nil {
-		snap.Message = filepath.Base(newest.Session.Dir) + " " + newest.Reason
+		snap.Message = rowLabel(newest.Session) + " " + newest.Reason
 		snap.Focus = &domain.FocusTarget{PID: newest.Session.PID, Dir: newest.Session.Dir}
 	}
 
@@ -151,8 +146,8 @@ func newestWaiting(states []domain.SessionState) *domain.SessionState {
 
 // sessionList builds the badge's session page: permission waits first, then
 // input waits, then working sessions; longer waits on top. Capped at
-// maxSessionRows. The returned slices share one order, so a row index from
-// the badge selects the matching focus target.
+// domain.MaxSessionRows. The returned slices share one order, so a row index
+// from the badge selects the matching focus target.
 func sessionList(states []domain.SessionState, now time.Time) ([]domain.SessionBrief, []domain.FocusTarget) {
 	ordered := make([]domain.SessionState, len(states))
 	copy(ordered, states)
@@ -165,8 +160,8 @@ func sessionList(states []domain.SessionState, now time.Time) ([]domain.SessionB
 		return ordered[i].Since.Before(ordered[j].Since)
 	})
 
-	if len(ordered) > maxSessionRows {
-		ordered = ordered[:maxSessionRows]
+	if len(ordered) > domain.MaxSessionRows {
+		ordered = ordered[:domain.MaxSessionRows]
 	}
 
 	briefs := make([]domain.SessionBrief, 0, len(ordered))
@@ -175,7 +170,9 @@ func sessionList(states []domain.SessionState, now time.Time) ([]domain.SessionB
 	for _, st := range ordered {
 		briefs = append(briefs, domain.SessionBrief{
 			Provider:  st.Session.Provider,
-			Name:      filepath.Base(st.Session.Dir),
+			Name:      rowLabel(st.Session),
+			Title:     foldSpace(sessionTitle(st.Session)),
+			Path:      st.Session.Dir,
 			Phase:     st.Phase,
 			Minutes:   phaseMinutes(st.Since, now),
 			CtxTokens: st.CtxTokens,
@@ -187,6 +184,33 @@ func sessionList(states []domain.SessionState, now time.Time) ([]domain.SessionB
 	}
 
 	return briefs, targets
+}
+
+// rowLabel is what the session list calls a session: the provider's own
+// handle when it has one, else the project directory. The banner message
+// uses the same label so the dashboard and the list agree.
+func rowLabel(s domain.Session) string {
+	if s.Name != "" {
+		return foldSpace(s.Name)
+	}
+
+	return filepath.Base(s.Dir)
+}
+
+// sessionTitle is the banner's description of a session; a provider with a
+// handle but no free text (Claude) repeats the handle.
+func sessionTitle(s domain.Session) string {
+	if s.Title != "" {
+		return s.Title
+	}
+
+	return s.Name
+}
+
+// foldSpace collapses runs of whitespace into single spaces: prompts arrive
+// with line breaks and the badge draws a single line.
+func foldSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func phaseRank(p domain.Phase) int {
