@@ -184,11 +184,13 @@ func agySources(dir string, events *hooks.EventLog, logger *slog.Logger) *usecas
 		logger.Warn("agy binary not found; set "+google.EnvClientID+"/"+google.EnvClientSecret+" for the Gemini quota", "module", "main")
 	}
 
+	history := agyfs.NewHistory(filepath.Join(dir, "history.jsonl"), time.Local, logger)
+
 	return &usecase.ProviderSources{
-		Sessions: agyfs.NewSessionRegistry(filepath.Join(dir, "presence"), logger),
+		Sessions: agyfs.NewSessionRegistry(filepath.Join(dir, "presence"), history.FirstPrompt, logger),
 		Phases:   usecase.NewResolver(events, agyfs.NewConversationDir(filepath.Join(dir, "conversations")), logger),
 		Plan:     google.NewQuotaFetcher(filepath.Join(dir, "antigravity-oauth-token"), agyBinary, logger),
-		Prompts:  agyfs.NewHistory(filepath.Join(dir, "history.jsonl"), time.Local, logger),
+		Prompts:  history,
 	}
 }
 

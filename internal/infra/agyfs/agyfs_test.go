@@ -23,7 +23,9 @@ const lsofPresence = "p11238\nn/Users/x/.gemini/antigravity-cli/presence/16a94c2
 func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 	calls := 0
 
-	r := NewSessionRegistry("/presence", discardLogger())
+	titles := map[string]string{"16a94c26-3837": "make the rotator retry"}
+
+	r := NewSessionRegistry("/presence", func(id string) string { return titles[id] }, discardLogger())
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	r.Now = func() time.Time { return now }
 	r.Run = func(args ...string) ([]byte, error) {
@@ -47,12 +49,12 @@ func TestSessionRegistryBuildsAndCaches(t *testing.T) {
 
 	first := sessions[0]
 	if first.Provider != domain.ProviderAntigravity || first.PID != 11238 ||
-		first.ID != "16a94c26-3837" || first.Dir != "/Users/x/proj-a" {
+		first.ID != "16a94c26-3837" || first.Dir != "/Users/x/proj-a" || first.Title != "make the rotator retry" {
 		t.Errorf("sessions[0] = %+v", first)
 	}
 
-	if sessions[1].PID != 18889 || sessions[1].Dir != "/Users/x/proj-b" {
-		t.Errorf("sessions[1] = %+v", sessions[1])
+	if sessions[1].PID != 18889 || sessions[1].Dir != "/Users/x/proj-b" || sessions[1].Title != "" {
+		t.Errorf("sessions[1] = %+v, want no title for a conversation without history", sessions[1])
 	}
 
 	// Within the TTL the registry must not shell out again.
@@ -145,5 +147,54 @@ func TestConversationDirInspect(t *testing.T) {
 		if got != tt.want || ctx != 0 {
 			t.Errorf("%s: phase=%v ctx=%d, want %v/0", tt.id, got, ctx, tt.want)
 		}
+	}
+}
+
+// The first prompt of a conversation is its title; later prompts do not
+// replace it, and a record appended after the first read is picked up.
+func TestHistoryFirstPrompt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+
+	content := `{"timestamp":1,"conversationId":"conv-a","display":"first ask","workspace":"/Users/x/a"}` + "\n" +
+		`{"timestamp":2,"conversationId":"conv-a","display":"second ask","workspace":"/Users/x/a"}` + "\n" +
+		"garbage\n" +
+		`{"timestamp":3,"conversationId":"","display":"orphan"}` + "\n"
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHistory(path, time.UTC, discardLogger())
+
+	if got := h.FirstPrompt("conv-a"); got != "first ask" {
+		t.Errorf("FirstPrompt(conv-a) = %q, want %q", got, "first ask")
+	}
+
+	if got := h.FirstPrompt("conv-b"); got != "" {
+		t.Errorf("FirstPrompt(conv-b) = %q, want empty before its first record", got)
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.WriteString(`{"timestamp":4,"conversationId":"conv-b","display":"new thread"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	f.Close()
+
+	if got := h.FirstPrompt("conv-b"); got != "new thread" {
+		t.Errorf("FirstPrompt(conv-b) after append = %q, want %q", got, "new thread")
+	}
+
+	if got := h.FirstPrompt("conv-a"); got != "first ask" {
+		t.Errorf("FirstPrompt(conv-a) after append = %q, want unchanged", got)
+	}
+
+	if got := NewHistory(filepath.Join(dir, "absent.jsonl"), time.UTC, discardLogger()).FirstPrompt("conv-a"); got != "" {
+		t.Errorf("FirstPrompt(missing file) = %q, want empty", got)
 	}
 }

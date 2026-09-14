@@ -18,8 +18,9 @@ const registryTTL = 10 * time.Second
 // NewSessionRegistry lists live agy sessions: agy keeps one open
 // presence/<conversationId>.lock per running interactive process and writes
 // nothing else about the session to disk, so the working directory comes
-// from the process itself (lsof again).
-func NewSessionRegistry(presenceDir string, logger *slog.Logger) *lockfs.Registry {
+// from the process itself (lsof again) and the title from history.jsonl
+// through firstPrompt.
+func NewSessionRegistry(presenceDir string, firstPrompt func(conversationID string) string, logger *slog.Logger) *lockfs.Registry {
 	log := logger.With("module", "agy-sessions")
 
 	return lockfs.NewRegistry(presenceDir, registryTTL, func(l *lockfs.Lister, holders []lockfs.Holder) ([]domain.Session, error) {
@@ -35,6 +36,7 @@ func NewSessionRegistry(presenceDir string, logger *slog.Logger) *lockfs.Registr
 				ID:       h.ID,
 				PID:      h.PID,
 				Dir:      cwds[h.PID],
+				Title:    firstPrompt(h.ID),
 			})
 		}
 
