@@ -17,7 +17,7 @@ blocked chat — with light and sound.
 │ [██████████··············]      │
 │ WEEKLY                   17% 2d │
 │ [████····················]      │
-│ CREDITS                32.66/50 │
+│ FABLE   36% 4d  CREDITS     65% │
 │ [████████████████········]      │
 │ IN 156.4k  OUT 783.5k           │
 │ ····· rotator INPUT ·····       │
@@ -57,7 +57,9 @@ one row of two half-width bars:
   (`CHATS`) and how many are waiting on you (`WAIT`).
 - **Plan-usage bars** — the same numbers as Claude Desktop's *Plan usage*
   panel: 5-hour limit, weekly limit and usage credits, each with a percent and
-  a reset countdown (`44% 3h`). Bars go amber at 70% and red at 90%.
+  a reset countdown (`44% 3h`). Bars go amber at 70% and red at 90%. A
+  model-scoped weekly limit (Claude's `Fable` bar) shows as a half-width bar
+  left of `CREDITS` when the plan has one.
 - **Burn-rate forecast** — the agent tracks how fast the 5-hour limit is
   filling; if you're on track to hit the cap *before* it resets, the badge
   shows a red `ETA 1.4h` instead of the reset time.
@@ -254,11 +256,11 @@ Hooks only take effect for sessions started afterwards.
 One line per frame, fields separated by `|`:
 
 ```
-CC8|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
+CC9|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<model_pct>|<model_reset>|<model_label>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
 extras = <P>~<chats>~<wait>~<5h_pct>~<5h_reset>~<wk_pct>~<wk_reset>~<prompts>(;…)   P: A (Antigravity) | X (Codex)
 ```
 
-The first 13 fields describe Claude Code; `<extras>` holds one group per
+The first 16 fields describe Claude Code; `<extras>` holds one group per
 other installed assistant, in display order — an assistant is present
 exactly when its group is sent, so a Claude-only host sends an empty field
 and the badge offers no other screen. The badge sums every block for the
@@ -294,7 +296,7 @@ a pane without an agent).
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and
-bump the `CC8` prefix on incompatible changes so a stale-firmware badge shows
+bump the `CC9` prefix on incompatible changes so a stale-firmware badge shows
 `NO LINK` instead of garbage.
 
 ## Make targets

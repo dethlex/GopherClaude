@@ -8,7 +8,7 @@ import (
 
 // Host -> badge wire format, one frame per line:
 //
-//	CC8|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
+//	CC9|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<model_pct>|<model_reset>|<model_label>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
 //
 // <len> is the byte length of the line before it. The USB receive ring has
 // no flow control, so a frame that arrives while the badge repaints loses
@@ -30,8 +30,8 @@ import (
 // text, title and path (may be empty) fill the banner for the highlighted
 // row; the host already cut them to the badge's widths.
 const (
-	framePrefix = "CC8"
-	frameFields = 16 // the 15 data fields plus the length trailer
+	framePrefix = "CC9"
+	frameFields = 19 // the 18 data fields plus the length trailer
 
 	lenField = frameFields - 1
 
@@ -77,19 +77,22 @@ type providerStats struct {
 }
 
 type frame struct {
-	chats    int
-	wait     int
-	fivePct  int
-	fiveRst  string
-	fiveEta  string
-	weekPct  int
-	weekRst  string
-	credPct  int
-	credTxt  string
-	tokIn    uint64
-	tokOut   uint64
-	msg      string
-	sessions []sessionRow
+	chats      int
+	wait       int
+	fivePct    int
+	fiveRst    string
+	fiveEta    string
+	weekPct    int
+	weekRst    string
+	credPct    int
+	credTxt    string
+	modelPct   int
+	modelRst   string
+	modelLabel string
+	tokIn      uint64
+	tokOut     uint64
+	msg        string
+	sessions   []sessionRow
 
 	// extras are the installed assistants besides Claude in the host's
 	// display order; extraCount says how many slots are filled.
@@ -169,19 +172,19 @@ func parseWhole(line string) (frame, error) {
 	var f frame
 
 	if !atoiAll(
-		[]*int{&f.chats, &f.wait, &f.fivePct, &f.weekPct, &f.credPct},
-		[]string{parts[1], parts[2], parts[3], parts[6], parts[8]},
+		[]*int{&f.chats, &f.wait, &f.fivePct, &f.weekPct, &f.credPct, &f.modelPct},
+		[]string{parts[1], parts[2], parts[3], parts[6], parts[8], parts[10]},
 	) {
 		return frame{}, errBadFrame
 	}
 
 	var err error
 
-	if f.tokIn, err = strconv.ParseUint(parts[10], 10, 64); err != nil {
+	if f.tokIn, err = strconv.ParseUint(parts[13], 10, 64); err != nil {
 		return frame{}, errBadFrame
 	}
 
-	if f.tokOut, err = strconv.ParseUint(parts[11], 10, 64); err != nil {
+	if f.tokOut, err = strconv.ParseUint(parts[14], 10, 64); err != nil {
 		return frame{}, errBadFrame
 	}
 
@@ -189,9 +192,11 @@ func parseWhole(line string) (frame, error) {
 	f.fiveEta = parts[5]
 	f.weekRst = parts[7]
 	f.credTxt = parts[9]
-	f.msg = parts[12]
-	f.sessions = parseSessions(parts[13])
-	f.extras, f.extraCount = parseExtras(parts[14])
+	f.modelRst = parts[11]
+	f.modelLabel = parts[12]
+	f.msg = parts[15]
+	f.sessions = parseSessions(parts[16])
+	f.extras, f.extraCount = parseExtras(parts[17])
 
 	return f, nil
 }

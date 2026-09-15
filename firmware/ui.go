@@ -23,8 +23,8 @@ import (
 //	[##########............]            [......................]
 //	WEEKLY              17% 2d          WEEKLY              17% 6d
 //	[#####.................]            [####..................]
-//	CREDITS           32.66/50          PROMPTS                 3
-//	[###############.......]
+//	FABLE   36% 4d   CREDITS      65%   PROMPTS                 3
+//	[########....]   [##############]
 //	IN 156.4k  OUT 783.5k
 //	========== BANNER ==========        ========== BANNER ==========
 //
@@ -137,6 +137,10 @@ const (
 	halfW        = (barW - halfGap) / 2
 	rightHalfX   = barX + halfW + halfGap
 	halfLabelW   = 40 // mark plus "5H"/"WK" before a column's value area
+
+	// Label slot of a half column on the Claude screen: "CREDIT"-sized, wider
+	// than the ALL view's mark-plus-"WK" slot.
+	claudeHalfLabelW = 66
 
 	maxBarRows = 2 * maxProviders
 )
@@ -364,7 +368,7 @@ func drawStaticUI(f frame) {
 	case viewAllMark:
 		drawAllLabels(f)
 	case provClaude:
-		for i, label := range [3]string{"5-HOUR", "WEEKLY", "CREDITS"} {
+		for i, label := range [2]string{"5-HOUR", "WEEKLY"} {
 			tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, rows3[i], label, colLabel)
 		}
 	default:
@@ -591,7 +595,7 @@ func renderDashboard(f frame, linked bool) {
 		renderCounts(linked, f.chats, f.wait)
 		renderBarRow(0, rows3[0], f.fivePct, limitValue(f.fivePct, f.fiveRst, f.fiveEta), etaColor(f.fiveEta))
 		renderBarRow(1, rows3[1], f.weekPct, limitValue(f.weekPct, f.weekRst, ""), colValue)
-		renderBarRow(2, rows3[2], f.credPct, creditsValue(f.credPct, f.credTxt), colValue)
+		renderClaudeThirdRow(f)
 		renderUsage("IN " + fmtTokens(f.tokIn) + "  OUT " + fmtTokens(f.tokOut))
 	default:
 		renderProvider(f.extraByLetter(view), linked)
@@ -644,20 +648,53 @@ func renderHalfRow(row int, leftPct int, leftValue string, leftColor color.RGBA,
 	renderHalf(2*row+1, rightHalfX, base, rightPct, rightValue, colValue)
 }
 
-// renderHalf is one half-width limit column: value right-aligned to the
-// column's edge, bar under the whole column (the left bar runs under the
-// mark too, so both bars line up as columns).
-func renderHalf(slot int, x, labelBase int16, pct int, value string, valueColor color.RGBA) {
+// renderHalfAt is one half-width limit column with a custom label width: value
+// right-aligned to the column's edge, bar under the whole column.
+func renderHalfAt(slot int, x, labelBase int16, labelW int16, pct int, value string, valueColor color.RGBA) {
 	key := value + "|" + strconv.Itoa(pct)
 	if drawn.valid && drawn.rows[slot] == key {
 		return
 	}
 
-	display.FillRectangle(x+halfLabelW, labelBase-rowLabelH+4, halfW-halfLabelW, rowLabelH, colBg)
+	display.FillRectangle(x+labelW, labelBase-rowLabelH+4, halfW-labelW, rowLabelH, colBg)
 	writeRightAligned(&freemono.Regular9pt7b, x+halfW, labelBase, value, valueColor)
 	drawBar(x, labelBase+barOffset, halfW, pct)
 
 	drawn.rows[slot] = key
+}
+
+// renderHalf is one half-width limit column: value right-aligned to the
+// column's edge, bar under the whole column (the left bar runs under the
+// mark too, so both bars line up as columns).
+func renderHalf(slot int, x, labelBase int16, pct int, value string, valueColor color.RGBA) {
+	renderHalfAt(slot, x, labelBase, halfLabelW, pct, value, valueColor)
+}
+
+// renderClaudeThirdRow draws CREDITS full width, or, when the plan has
+// a model-scoped weekly limit, that limit on the left and CREDITS on the
+// right. The labels are part of the row: the layout follows the frame.
+func renderClaudeThirdRow(f frame) {
+	base := rows3[2]
+	key := f.modelLabel + "|" + strconv.Itoa(f.modelPct) + "|" + f.modelRst + "|" + strconv.Itoa(f.credPct) + "|" + f.credTxt
+	if drawn.valid && drawn.rows[2] == key {
+		return
+	}
+
+	display.FillRectangle(0, base-rowLabelH+4, screenW, rowLabelH+barOffset+barH, colBg)
+
+	if f.modelLabel == "" {
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, base, "CREDITS", colLabel)
+		drawLimitRow(base, base+barOffset, f.credPct, creditsValue(f.credPct, f.credTxt), colValue)
+	} else {
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, barX, base, f.modelLabel, colLabel)
+		tinyfont.WriteLine(&display, &freemono.Regular9pt7b, rightHalfX, base, "CREDITS", colLabel)
+		drawn.rows[3] = "" // the halves are drawn unconditionally below
+		drawn.rows[4] = ""
+		renderHalfAt(3, barX, base, claudeHalfLabelW, f.modelPct, limitValue(f.modelPct, f.modelRst, ""), colValue)
+		renderHalfAt(4, rightHalfX, base, claudeHalfLabelW, f.credPct, pctValue(f.credPct), colValue)
+	}
+
+	drawn.rows[2] = key
 }
 
 // etaColor turns the 5-hour value red when the burn-rate forecast is binding.
@@ -939,6 +976,16 @@ func creditsValue(pct int, text string) string {
 
 	if text != "" {
 		return text
+	}
+
+	return strconv.Itoa(pct) + "%"
+}
+
+// pctValue is the bare percentage for a half column, where the credits
+// text does not fit.
+func pctValue(pct int) string {
+	if pct == pctUnknown {
+		return "--"
 	}
 
 	return strconv.Itoa(pct) + "%"
