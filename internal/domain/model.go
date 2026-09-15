@@ -114,6 +114,11 @@ type (
 		Weekly      Limit
 		CreditsPct  int    // extra usage credits, UnknownPct when disabled
 		CreditsText string // e.g. "32.66/50"
+		// Model is the weekly limit scoped to one model family (the usage API
+		// calls it weekly_scoped and names the model, e.g. "Fable"); ModelLabel
+		// is that name, empty when the plan has no such limit.
+		Model      Limit
+		ModelLabel string
 		// FiveHourETA predicts when the 5-hour limit hits 100% at the
 		// current burn rate. Zero when unknown or when the limit resets
 		// before it would be exhausted (i.e. the forecast is not the
@@ -187,6 +192,7 @@ func UnknownPlanUsage() PlanUsage {
 	return PlanUsage{
 		FiveHour:   Limit{Pct: UnknownPct},
 		Weekly:     Limit{Pct: UnknownPct},
+		Model:      Limit{Pct: UnknownPct},
 		CreditsPct: UnknownPct,
 	}
 }

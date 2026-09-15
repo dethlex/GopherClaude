@@ -13,7 +13,7 @@ import (
 
 // Wire format, one frame per line (firmware/protocol.go is the peer):
 //
-//	CC8|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
+//	CC9|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<model_pct>|<model_reset>|<model_label>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
 //
 // <len> is the byte length of the line before it; the badge drops a frame
 // whose length disagrees (torn or glued frames, see Encode).
@@ -39,12 +39,18 @@ import (
 // banner for the highlighted row. The badge has no ellipsis glyph and
 // cannot measure, so the host shortens the path itself ("../src/machine").
 const (
-	framePrefix = "CC8"
+	framePrefix = "CC9"
 	maxMsgLen   = 24
 	maxNameLen  = 14
 	// One banner line of the badge's 9pt monospace font.
 	maxTitleLen = 28
 	maxPathLen  = 28
+
+	// The model label sits in a half-width column's label slot on the
+	// badge ("FABLE"); modelLabelField is its index among the frame's
+	// fields, which the tests read back.
+	maxModelLabelLen = 6
+	modelLabelField  = 12
 
 	// A Cyrillic letter transliterates to at most this many ASCII bytes
 	// ("щ" → "shch"); sanitizeUnbounded sizes its pass by it.
@@ -114,6 +120,9 @@ func Encode(s domain.Snapshot, now time.Time) string {
 		"|" + formatReset(s.Plan.Weekly, now) +
 		"|" + strconv.Itoa(s.Plan.CreditsPct) +
 		"|" + sanitizeText(s.Plan.CreditsText) +
+		"|" + strconv.Itoa(s.Plan.Model.Pct) +
+		"|" + formatReset(s.Plan.Model, now) +
+		"|" + sanitize(strings.ToUpper(s.Plan.ModelLabel), maxModelLabelLen) +
 		"|" + strconv.FormatUint(s.Usage.Input, 10) +
 		"|" + strconv.FormatUint(s.Usage.Output, 10) +
 		"|" + sanitizeText(s.Message) +

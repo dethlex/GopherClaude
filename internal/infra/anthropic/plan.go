@@ -43,6 +43,8 @@ const (
 	minForecastSpan  = 2 * time.Minute
 	minRatePctPerMin = 0.05
 	resetDropPct     = 1.0
+
+	limitKindModelWeekly = "weekly_scoped"
 )
 
 // TokenFunc returns a bearer token for the usage API.
@@ -132,10 +134,25 @@ type (
 		Utilization  float64 `json:"utilization"`
 	}
 
+	// limitEntry is one row of the usage API's self-describing limits list;
+	// only the model-scoped weekly row is read here (the session and
+	// weekly_all rows duplicate five_hour/seven_day).
+	limitEntry struct {
+		Kind     string    `json:"kind"`
+		Percent  float64   `json:"percent"`
+		ResetsAt time.Time `json:"resets_at"`
+		Scope    *struct {
+			Model *struct {
+				DisplayName string `json:"display_name"`
+			} `json:"model"`
+		} `json:"scope"`
+	}
+
 	usageResponse struct {
-		FiveHour *bucket     `json:"five_hour"`
-		SevenDay *bucket     `json:"seven_day"`
-		Extra    *extraUsage `json:"extra_usage"`
+		FiveHour *bucket      `json:"five_hour"`
+		SevenDay *bucket      `json:"seven_day"`
+		Extra    *extraUsage  `json:"extra_usage"`
+		Limits   []limitEntry `json:"limits"`
 	}
 )
 
@@ -205,6 +222,17 @@ func toPlanUsage(r usageResponse) domain.PlanUsage {
 	if r.Extra != nil && r.Extra.IsEnabled && r.Extra.MonthlyLimit > 0 {
 		plan.CreditsPct = clampPct(r.Extra.Utilization)
 		plan.CreditsText = formatCredits(r.Extra.UsedCredits) + "/" + formatCredits(r.Extra.MonthlyLimit)
+	}
+
+	for _, entry := range r.Limits {
+		if entry.Kind == limitKindModelWeekly && entry.Scope != nil && entry.Scope.Model != nil && entry.Scope.Model.DisplayName != "" {
+			plan.Model = domain.Limit{
+				Pct:      clampPct(entry.Percent),
+				ResetsAt: entry.ResetsAt,
+			}
+			plan.ModelLabel = entry.Scope.Model.DisplayName
+			break
+		}
 	}
 
 	return plan

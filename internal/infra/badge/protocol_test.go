@@ -26,6 +26,8 @@ func TestEncode(t *testing.T) {
 			CreditsPct:  65,
 			CreditsText: "32.66/50",
 			FiveHourETA: 84 * time.Minute,
+			Model:       domain.Limit{Pct: 42, ResetsAt: now.Add(4*24*time.Hour + 3*time.Hour)},
+			ModelLabel:  "Fable",
 		},
 		Message: "ClaudeControl PERM",
 		Sessions: []domain.SessionBrief{
@@ -59,7 +61,7 @@ func TestEncode(t *testing.T) {
 	}
 
 	got := Encode(snap, now)
-	body := "CC8|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
+	body := "CC9|3|1|36|3h|1.4h|17|2d|65|32.66/50|42|4d|FABLE|86508|705246|ClaudeControl PERM" +
 		"|ClaudeControl~P~5~412000~C~ClaudeControl~../ClaudeControl" +
 		";rotator~W~0~73000~A~fix the rotator retries~/Users/x/rotator" +
 		";api~I~2~9000~X~~" +
@@ -77,7 +79,7 @@ func TestEncodeUnknownPlan(t *testing.T) {
 	got := Encode(snap, time.Now())
 
 	// No extras: Claude alone, the trailing field stays empty.
-	body := "CC8|0|0|-1|||-1||-1||0|0|||"
+	body := "CC9|0|0|-1|||-1||-1||-1|||0|0|||"
 	want := body + "|" + strconv.Itoa(len(body))
 
 	if got != want {
@@ -289,6 +291,8 @@ func TestEncodeWorstCaseFitsBadgeBuffer(t *testing.T) {
 		CreditsPct:  100,
 		CreditsText: long,
 		FiveHourETA: 99 * time.Hour,
+		Model:       domain.Limit{Pct: 100, ResetsAt: now.Add(6*24*time.Hour + 23*time.Hour)},
+		ModelLabel:  long,
 	}
 
 	snap := domain.Snapshot{
@@ -354,5 +358,26 @@ func TestEncodeTrailsItsOwnLength(t *testing.T) {
 	n, err := strconv.Atoi(line[cut+1:])
 	if err != nil || n != cut {
 		t.Errorf("Encode() trailer = %q (%v), want the byte length of the body, %d", line[cut+1:], err, cut)
+	}
+}
+
+// The model label is drawn by the badge's 7-bit font in a half-width
+// column: upper case, separators replaced, at most six characters.
+func TestEncodeModelLabel(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Fable", "FABLE"},
+		{"opus extended", "OPUS E"},
+		{"a|b", "A/B"},
+		{"", ""},
+	}
+
+	for _, c := range cases {
+		snap := domain.Snapshot{Plan: domain.UnknownPlanUsage()}
+		snap.Plan.ModelLabel = c.in
+
+		fields := strings.Split(Encode(snap, time.Now()), "|")
+		if got := fields[modelLabelField]; got != c.want {
+			t.Errorf("model label %q encoded as %q, want %q", c.in, got, c.want)
+		}
 	}
 }

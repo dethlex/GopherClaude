@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dethlex/GopherClaude/internal/domain"
 	"github.com/dethlex/GopherClaude/internal/infra/plancache"
 )
 
@@ -24,7 +25,23 @@ const sampleResponse = `{
     "used_credits": 3266.0,
     "utilization": 65.32,
     "currency": "EUR"
-  }
+  },
+  "limits": [
+    {"kind": "session", "group": "session", "percent": 36, "severity": "normal", "resets_at": "2026-06-11T21:09:59.949097+00:00", "scope": null, "is_active": false},
+    {"kind": "weekly_all", "group": "weekly", "percent": 17, "severity": "normal", "resets_at": "2026-06-13T21:59:59.949118+00:00", "scope": null, "is_active": true},
+    {"kind": "weekly_scoped", "group": "weekly", "percent": 42, "severity": "warning", "resets_at": "2026-06-13T21:59:59.949680+00:00", "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}, "is_active": false}
+  ]
+}`
+
+// A response whose scoped weekly limits carry no model: the API describes a
+// surface limit and a limit whose scope is null; neither is a model bar.
+const noModelResponse = `{
+  "five_hour": {"utilization": 3.0, "resets_at": "2026-06-11T21:09:59.949097+00:00"},
+  "seven_day": {"utilization": 9.0, "resets_at": "2026-06-13T21:59:59.949118+00:00"},
+  "limits": [
+    {"kind": "weekly_scoped", "group": "weekly", "percent": 50, "scope": {"model": null, "surface": "cowork"}, "is_active": false},
+    {"kind": "weekly_scoped", "group": "weekly", "percent": 60, "scope": null, "is_active": false}
+  ]
 }`
 
 func testFetcher(t *testing.T, handler http.HandlerFunc) *PlanFetcher {
@@ -73,6 +90,35 @@ func TestPlanParsesResponse(t *testing.T) {
 
 	if got.CreditsText != "32.66/50" {
 		t.Errorf("CreditsText = %q, want %q", got.CreditsText, "32.66/50")
+	}
+
+	// The model-scoped weekly limit comes from the self-describing limits
+	// array (the named buckets are codenames now).
+	if got.Model.Pct != 42 || got.ModelLabel != "Fable" {
+		t.Errorf("Model = %+v / %q, want 42%% labelled Fable", got.Model, got.ModelLabel)
+	}
+
+	wantModelReset := time.Date(2026, 6, 13, 21, 59, 59, 949680000, time.UTC)
+	if !got.Model.ResetsAt.Equal(wantModelReset) {
+		t.Errorf("Model.ResetsAt = %v, want %v", got.Model.ResetsAt, wantModelReset)
+	}
+}
+
+func TestPlanWithoutModelLimit(t *testing.T) {
+	f := testFetcher(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(noModelResponse))
+	})
+
+	now := time.Now()
+	f.Refresh(now)
+	got := f.Plan(now)
+
+	if got.Weekly.Pct != 9 {
+		t.Errorf("Weekly.Pct = %d, want 9", got.Weekly.Pct)
+	}
+
+	if got.Model.Pct != domain.UnknownPct || got.ModelLabel != "" {
+		t.Errorf("Model = %+v / %q, want unknown and unlabelled", got.Model, got.ModelLabel)
 	}
 }
 
