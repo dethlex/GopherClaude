@@ -91,12 +91,12 @@ func TestMonitorSnapshot(t *testing.T) {
 		t.Errorf("Sessions[0].Minutes = %d, want 1", got.Sessions[0].Minutes)
 	}
 
-	if got.Focus == nil || got.Focus.Dir != "/Users/x/gamma" || got.Focus.PID != 4242 {
-		t.Errorf("Focus = %+v, want gamma/4242", got.Focus)
+	if got.Focus == nil || got.Focus.Dir != "/Users/x/gamma" || got.Focus.PID != 4242 || got.Focus.SessionID != "s3" {
+		t.Errorf("Focus = %+v, want gamma/4242/s3", got.Focus)
 	}
 
-	if len(got.FocusTargets) != len(got.Sessions) || got.FocusTargets[0].PID != 4242 {
-		t.Errorf("FocusTargets = %+v", got.FocusTargets)
+	if len(got.FocusTargets) != len(got.Sessions) || got.FocusTargets[0].PID != 4242 || got.FocusTargets[0].SessionID != "s3" {
+		t.Errorf("FocusTargets = %+v, want the session id carried along", got.FocusTargets)
 	}
 
 	// Without other assistants wired there is nothing to list: the badge

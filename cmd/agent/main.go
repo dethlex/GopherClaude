@@ -21,6 +21,7 @@ import (
 	"github.com/dethlex/GopherClaude/internal/infra/claudefs"
 	"github.com/dethlex/GopherClaude/internal/infra/codexfs"
 	"github.com/dethlex/GopherClaude/internal/infra/google"
+	"github.com/dethlex/GopherClaude/internal/infra/herdr"
 	"github.com/dethlex/GopherClaude/internal/infra/hooks"
 	"github.com/dethlex/GopherClaude/internal/infra/host"
 	"github.com/dethlex/GopherClaude/internal/infra/openai"
@@ -55,6 +56,7 @@ func run() error {
 		claudeDir    = flag.String("claude-dir", filepath.Join(home, ".claude"), "Claude Code data directory")
 		agyDir       = flag.String("agy-dir", filepath.Join(home, ".gemini", "antigravity-cli"), "Antigravity CLI data directory")
 		codexDir     = flag.String("codex-dir", defaultCodexDir(home), "Codex data directory (CODEX_HOME)")
+		herdrBin     = flag.String("herdr", herdr.DefaultBin(), "path to the herdr CLI for exact pane focus; empty disables it")
 		eventsFile   = flag.String("events", filepath.Join(home, ".claude-badge", "events.jsonl"), "hook events file")
 		dryRun       = flag.Bool("dry-run", false, "log frames instead of writing to the serial port")
 		debug        = flag.Bool("debug", false, "verbose logging")
@@ -97,7 +99,13 @@ func run() error {
 		sink = badge.NewDryRunSink(logger)
 	}
 
-	focuser := host.NewWindowFocuser(logger)
+	var focuser domain.Focuser = host.NewWindowFocuser(logger)
+	if *herdrBin != "" {
+		focuser = herdr.NewFocuser(*herdrBin, focuser, logger)
+		logger.Info("herdr pane focus enabled", "module", "main", "bin", *herdrBin)
+	} else {
+		logger.Info("herdr not found, focus raises the app only", "module", "main")
+	}
 
 	defer func() {
 		if err := sink.Close(); err != nil {

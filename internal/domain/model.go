@@ -132,10 +132,13 @@ type (
 	}
 
 	// FocusTarget identifies the session a "jump to chat" button should
-	// bring to the foreground on the host.
+	// bring to the foreground on the host. SessionID lets a terminal
+	// multiplexer that knows agent sessions (Herdr) find the exact pane;
+	// PID and Dir serve everything else.
 	FocusTarget struct {
-		PID int
-		Dir string
+		PID       int
+		Dir       string
+		SessionID string
 	}
 
 	// Snapshot is what the badge ultimately renders. Chats/Waiting/Usage/Plan

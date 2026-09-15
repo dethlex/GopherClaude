@@ -84,7 +84,10 @@ one row of two half-width bars:
   are 7-bit.
 - **Jump to a chat** — move the cursor with the D-pad (up/down) and press
   **A**; the agent foregrounds that session's window on the Mac (terminal or
-  Claude Desktop). On the dashboard, **A** jumps to the alerting session.
+  Claude Desktop). If the session runs inside Herdr the
+  agent first focuses its exact workspace, tab and pane through the `herdr` CLI
+  (found via `HERDR_BIN_PATH`, `PATH` or Homebrew; `-herdr` overrides), then
+  raises the app. On the dashboard, **A** jumps to the alerting session.
 - **Work-in-progress spinner** — a small animated spinner in the header spins
   whenever at least one session is actually working (model generating or a tool
   running), so "busy" is distinguishable from "idle but connected" at a glance.
@@ -284,7 +287,10 @@ frame arrives for 10 seconds it shows `NO LINK`.
 **Back-channel (badge → host):** button A sends `CMD focus` (dashboard) or
 `CMD focus <row>` (session list). The agent walks the session pid's process
 tree to the outermost `.app` ancestor and `open`s it — no TCC prompt, so it
-works from the background service.
+works from the background service. With Herdr installed it first asks `herdr
+pane list` / `pane process-info` for the pane whose agent session id or
+foreground pid is the session's and focuses it (`agent focus`, or `tab focus` for
+a pane without an agent).
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and

@@ -81,7 +81,7 @@ func (m *Monitor) Snapshot(now time.Time) domain.Snapshot {
 
 	if newest := newestWaiting(all); newest != nil {
 		snap.Message = rowLabel(newest.Session) + " " + newest.Reason
-		snap.Focus = &domain.FocusTarget{PID: newest.Session.PID, Dir: newest.Session.Dir}
+		snap.Focus = &domain.FocusTarget{PID: newest.Session.PID, Dir: newest.Session.Dir, SessionID: newest.Session.ID}
 	}
 
 	snap.Sessions, snap.FocusTargets = sessionList(all, now)
@@ -180,8 +180,9 @@ func sessionList(states []domain.SessionState, now time.Time) ([]domain.SessionB
 			CtxTokens: st.CtxTokens,
 		})
 		targets = append(targets, domain.FocusTarget{
-			PID: st.Session.PID,
-			Dir: st.Session.Dir,
+			PID:       st.Session.PID,
+			Dir:       st.Session.Dir,
+			SessionID: st.Session.ID,
 		})
 	}
 
