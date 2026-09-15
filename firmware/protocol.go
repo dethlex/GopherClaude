@@ -8,7 +8,13 @@ import (
 
 // Host -> badge wire format, one frame per line:
 //
-//	CC6|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
+//	CC8|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
+//
+// <len> is the byte length of the line before it. The USB receive ring has
+// no flow control, so a frame that arrives while the badge repaints loses
+// its tail; its head stays in the line buffer and the next frame glues onto
+// it. Such a line can still show the right number of separators, and only
+// the length gives it away, so a frame whose length disagrees is dropped.
 //
 // The fixed block is Claude Code. <extras> carries every other installed
 // assistant as a repeated group joined by ';':
@@ -24,8 +30,10 @@ import (
 // text, title and path (may be empty) fill the banner for the highlighted
 // row; the host already cut them to the badge's widths.
 const (
-	framePrefix = "CC7"
-	frameFields = 15
+	framePrefix = "CC8"
+	frameFields = 16 // the 15 data fields plus the length trailer
+
+	lenField = frameFields - 1
 
 	pctUnknown = -1
 
@@ -127,9 +135,34 @@ func (f frame) extraByLetter(p byte) providerStats {
 	return providerStats{prov: p, fivePct: pctUnknown, weekPct: pctUnknown}
 }
 
+// parseFrame accepts a whole, single frame; when the line fails, the tail
+// after the last frame prefix is tried on its own, because a torn frame's
+// head glued in front of a whole frame is the common failure and the whole
+// frame behind it is still good.
 func parseFrame(line string) (frame, error) {
-	parts := strings.SplitN(line, "|", frameFields)
+	f, err := parseWhole(line)
+	if err == nil {
+		return f, nil
+	}
+
+	if i := strings.LastIndex(line, framePrefix+"|"); i > 0 {
+		return parseWhole(line[i:])
+	}
+
+	return frame{}, err
+}
+
+// parseWhole rejects anything but exactly one frame: an exact field count (a
+// glued pair of frames has twice the separators) and a length trailer that
+// matches the bytes actually received.
+func parseWhole(line string) (frame, error) {
+	parts := strings.Split(line, "|")
 	if len(parts) != frameFields || parts[0] != framePrefix {
+		return frame{}, errBadFrame
+	}
+
+	declared, lenErr := strconv.Atoi(parts[lenField])
+	if lenErr != nil || declared != len(line)-len(parts[lenField])-1 {
 		return frame{}, errBadFrame
 	}
 

@@ -37,6 +37,10 @@ const (
 	// reopens it. ~4 missed 2s frames.
 	echoSilenceTimeout = 8 * time.Second
 
+	// badgeErrorPrefix opens the badge's complaint about a frame it dropped
+	// ("err: bad frame"), as opposed to the "ok chats=…" echo.
+	badgeErrorPrefix = "err:"
+
 	// The badge receives over TinyGo's USB CDC: a 512-byte ring with no
 	// flow control (what does not fit is dropped) drained every 10 ms by
 	// its main loop. A CC7 frame runs to a few kilobytes, so it goes out
@@ -208,7 +212,13 @@ func (s *SerialSink) readReplies(now time.Time) []domain.Command {
 				cmds = append(cmds, cmd)
 			}
 		default:
-			s.logger.Debug("badge", "echo", line)
+			if strings.HasPrefix(line, badgeErrorPrefix) {
+				// A torn frame (USB overrun while the badge repainted) is
+				// worth a warning: many in a row mean the pacing is off.
+				s.logger.Warn("badge rejected a frame", "echo", line)
+			} else {
+				s.logger.Debug("badge", "echo", line)
+			}
 		}
 	}
 

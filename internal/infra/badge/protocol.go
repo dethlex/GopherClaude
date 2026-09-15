@@ -13,7 +13,10 @@ import (
 
 // Wire format, one frame per line (firmware/protocol.go is the peer):
 //
-//	CC7|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
+//	CC8|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
+//
+// <len> is the byte length of the line before it; the badge drops a frame
+// whose length disagrees (torn or glued frames, see Encode).
 //
 // The fixed block is Claude Code. <extras> lists every other installed
 // assistant as a repeated group, groups joined by ';':
@@ -36,7 +39,7 @@ import (
 // banner for the highlighted row. The badge has no ellipsis glyph and
 // cannot measure, so the host shortens the path itself ("../src/machine").
 const (
-	framePrefix = "CC7"
+	framePrefix = "CC8"
 	maxMsgLen   = 24
 	maxNameLen  = 14
 	// One banner line of the badge's 9pt monospace font.
@@ -101,7 +104,7 @@ func ParseCommand(line string) (domain.Command, bool) {
 // newline). Text fields are reduced to printable ASCII: the badge fonts have
 // no other glyphs, and '|', '~', ';' are separators.
 func Encode(s domain.Snapshot, now time.Time) string {
-	return framePrefix +
+	body := framePrefix +
 		"|" + strconv.Itoa(s.Chats) +
 		"|" + strconv.Itoa(s.Waiting) +
 		"|" + strconv.Itoa(s.Plan.FiveHour.Pct) +
@@ -116,6 +119,12 @@ func Encode(s domain.Snapshot, now time.Time) string {
 		"|" + sanitizeText(s.Message) +
 		"|" + encodeSessions(s.Sessions) +
 		"|" + encodeExtras(s.Extras, now)
+
+	// The trailer is the body's byte length. A USB overrun on the badge
+	// tears a frame and leaves its head in the line buffer, where the next
+	// frame glues onto it; that glued line kept the right field count, so
+	// the length is what lets the badge drop it.
+	return body + "|" + strconv.Itoa(len(body))
 }
 
 // encodeExtras renders one group per installed assistant besides Claude, in

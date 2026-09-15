@@ -251,7 +251,7 @@ Hooks only take effect for sessions started afterwards.
 One line per frame, fields separated by `|`:
 
 ```
-CC7|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>\n
+CC8|<chats>|<wait>|<5h_pct>|<5h_reset>|<5h_eta>|<wk_pct>|<wk_reset>|<cred_pct>|<cred_text>|<tok_in>|<tok_out>|<msg>|<sessions>|<extras>|<len>\n
 extras = <P>~<chats>~<wait>~<5h_pct>~<5h_reset>~<wk_pct>~<wk_reset>~<prompts>(;…)   P: A (Antigravity) | X (Codex)
 ```
 
@@ -269,6 +269,10 @@ host shortens the path from the left: `../src/machine`). The badge filters
 and pages the list itself and answers `CMD focus <n>` with the row's index in
 the frame. Frames are a few kilobytes and go out in 128-byte pieces 10 ms
 apart: the badge's USB receive ring is 512 bytes and has no flow control.
+`<len>` is the byte length of the line before it: a frame that arrives while
+the badge is busy repainting loses its tail, and the badge drops it instead
+of rendering half of it (the next frame, glued behind the torn head, is
+parsed on its own). The agent logs every rejected frame as a warning.
 Text fields are printable ASCII only — the badge fonts are 7-bit, Cyrillic is
 transliterated. `title` is a 28-byte excerpt of a thread's first prompt: it
 stays on the USB cable and the badge, but `make dry-run` prints whole frames
@@ -284,7 +288,7 @@ works from the background service.
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and
-bump the `CC7` prefix on incompatible changes so a stale-firmware badge shows
+bump the `CC8` prefix on incompatible changes so a stale-firmware badge shows
 `NO LINK` instead of garbage.
 
 ## Make targets

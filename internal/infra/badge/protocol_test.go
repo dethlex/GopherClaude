@@ -2,6 +2,7 @@ package badge
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,11 +59,12 @@ func TestEncode(t *testing.T) {
 	}
 
 	got := Encode(snap, now)
-	want := "CC7|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
+	body := "CC8|3|1|36|3h|1.4h|17|2d|65|32.66/50|86508|705246|ClaudeControl PERM" +
 		"|ClaudeControl~P~5~412000~C~ClaudeControl~../ClaudeControl" +
 		";rotator~W~0~73000~A~fix the rotator retries~/Users/x/rotator" +
 		";api~I~2~9000~X~~" +
 		"|A~2~1~22~4h~18~6d~7;X~1~0~-1~~17~6d~3"
+	want := body + "|" + strconv.Itoa(len(body))
 
 	if got != want {
 		t.Errorf("Encode() =\n%q\nwant\n%q", got, want)
@@ -75,7 +77,8 @@ func TestEncodeUnknownPlan(t *testing.T) {
 	got := Encode(snap, time.Now())
 
 	// No extras: Claude alone, the trailing field stays empty.
-	want := "CC7|0|0|-1|||-1||-1||0|0|||"
+	body := "CC8|0|0|-1|||-1||-1||0|0|||"
+	want := body + "|" + strconv.Itoa(len(body))
 
 	if got != want {
 		t.Errorf("Encode() = %q, want %q", got, want)
@@ -90,7 +93,7 @@ func TestEncodeSingleExtra(t *testing.T) {
 
 	got := Encode(snap, time.Now())
 
-	if !strings.HasSuffix(got, "|X~0~0~-1~~-1~~0") {
+	if !strings.Contains(got, "|X~0~0~-1~~-1~~0|") {
 		t.Errorf("Encode() = %q, want a single Codex group with no separator around it", got)
 	}
 }
@@ -333,5 +336,23 @@ func TestEncodeSessionsNeverSendsEmptyLabel(t *testing.T) {
 
 	if got != want {
 		t.Errorf("encodeSessions(empty label) = %q, want %q", got, want)
+	}
+}
+
+// The last field is the byte length of everything before it. The badge drops
+// a frame whose length disagrees: a frame torn by a USB overrun leaves its
+// first bytes in the badge's line buffer, the next frame glues onto them,
+// and the glued line used to pass the field count with a garbage tail.
+func TestEncodeTrailsItsOwnLength(t *testing.T) {
+	line := Encode(domain.Snapshot{Plan: domain.UnknownPlanUsage()}, time.Now())
+
+	cut := strings.LastIndex(line, "|")
+	if cut < 0 {
+		t.Fatalf("Encode() = %q, no fields", line)
+	}
+
+	n, err := strconv.Atoi(line[cut+1:])
+	if err != nil || n != cut {
+		t.Errorf("Encode() trailer = %q (%v), want the byte length of the body, %d", line[cut+1:], err, cut)
 	}
 }
