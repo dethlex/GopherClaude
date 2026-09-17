@@ -292,7 +292,10 @@ tree to the outermost `.app` ancestor and `open`s it — no TCC prompt, so it
 works from the background service. With Herdr installed it first asks `herdr
 pane list` / `pane process-info` for the pane whose agent session id or
 foreground pid is the session's and focuses it (`agent focus`, or `tab focus` for
-a pane without an agent).
+a pane without an agent), then raises the terminal window that hosts an attached
+`herdr` client (Herdr itself is a TUI, not an app). If the `herdr` CLI cannot
+talk to the server (typically `protocol_mismatch` after a Herdr upgrade until
+you restart it), the agent warns once in its log and just raises the app.
 
 The encoder (`internal/infra/badge/protocol.go`) and the parser
 (`firmware/protocol.go`) implement the same format; change them together and

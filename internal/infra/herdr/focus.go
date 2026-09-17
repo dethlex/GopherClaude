@@ -13,6 +13,9 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dethlex/GopherClaude/internal/domain"
@@ -29,6 +32,16 @@ const (
 	// A button press must not stall the frame loop: herdr answers in
 	// milliseconds, anything longer means it is gone.
 	callTimeout = 2 * time.Second
+
+	// The herdr binary name as ps reports it (the server runs by its full
+	// Homebrew path, an attached client as a bare name).
+	herdrCommand = "herdr"
+
+	// ps prints this as the tty of a process without a controlling
+	// terminal: the server, which lives under launchd.
+	noTTY = "??"
+
+	psColumns = 4
 )
 
 var errNoPane = errors.New("no herdr pane hosts the session")
@@ -40,9 +53,18 @@ type (
 	// Focuser focuses the Herdr pane of a session, then hands over to the
 	// app-level focuser.
 	Focuser struct {
-		run    runner
-		next   domain.Focuser
-		logger *slog.Logger
+		run runner
+		// clients lists the pids of attached herdr clients: Herdr is a TUI,
+		// so the window to raise belongs to the terminal hosting one of
+		// them, not to anything above the pane's process. A seam for tests.
+		clients func(ctx context.Context) []int
+		next    domain.Focuser
+		logger  *slog.Logger
+
+		// lastUnavailable is the herdr error already warned about, so a
+		// broken CLI (protocol mismatch after an update, server down) is
+		// reported once per cause rather than on every button press.
+		lastUnavailable string
 	}
 
 	pane struct {
@@ -97,9 +119,46 @@ func NewFocuser(bin string, next domain.Focuser, logger *slog.Logger) *Focuser {
 		run: func(ctx context.Context, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, bin, args...).Output()
 		},
-		next:   next,
-		logger: logger.With("module", "herdr-focus"),
+		clients: attachedClients,
+		next:    next,
+		logger:  logger.With("module", "herdr-focus"),
 	}
+}
+
+// attachedClients finds herdr processes that have a controlling terminal:
+// those are attached clients; the server has none.
+func attachedClients(ctx context.Context) []int {
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,tty=,comm=").Output()
+	if err != nil {
+		return nil
+	}
+
+	return parseClients(out)
+}
+
+// parseClients reads `ps -axo pid=,ppid=,tty=,comm=` output.
+func parseClients(out []byte) []int {
+	var pids []int
+
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < psColumns {
+			continue
+		}
+
+		if filepath.Base(fields[3]) != herdrCommand || fields[2] == noTTY {
+			continue
+		}
+
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+
+		pids = append(pids, pid)
+	}
+
+	return pids
 }
 
 // Focus focuses the session's pane when Herdr hosts it and always lets the
@@ -110,23 +169,33 @@ func (f *Focuser) Focus(target domain.FocusTarget) error {
 	defer cancel()
 
 	focused := false
+	appTarget := target
 
 	p, err := f.locate(ctx, target)
 	switch {
 	case errors.Is(err, errNoPane):
+		f.lastUnavailable = ""
 		f.logger.Debug("session outside herdr", "dir", target.Dir)
 	case err != nil:
-		f.logger.Debug("herdr unavailable", "error", err)
+		f.warnUnavailable(err)
 	default:
+		f.lastUnavailable = ""
+
 		if err := f.focusPane(ctx, p); err != nil {
 			f.logger.Warn("focus herdr pane", "pane", p.PaneID, "error", err)
 		} else {
 			focused = true
 			f.logger.Info("focused pane", "pane", p.PaneID, "dir", target.Dir)
+
+			// The pane is selected; now the terminal window that shows
+			// Herdr must come to the front, and that is the client's.
+			if pids := f.clients(ctx); len(pids) > 0 {
+				appTarget.PID = pids[0]
+			}
 		}
 	}
 
-	if err := f.next.Focus(target); err != nil {
+	if err := f.next.Focus(appTarget); err != nil {
 		if focused {
 			f.logger.Debug("app focus after pane focus", "error", err)
 
@@ -137,6 +206,18 @@ func (f *Focuser) Focus(target domain.FocusTarget) error {
 	}
 
 	return nil
+}
+
+// warnUnavailable reports a herdr failure once per distinct cause.
+func (f *Focuser) warnUnavailable(err error) {
+	if err.Error() == f.lastUnavailable {
+		f.logger.Debug("herdr still unavailable", "error", err)
+
+		return
+	}
+
+	f.lastUnavailable = err.Error()
+	f.logger.Warn("herdr unavailable, focus raises the app only", "error", err)
 }
 
 // locate finds the pane by agent session id, else by pid among the panes

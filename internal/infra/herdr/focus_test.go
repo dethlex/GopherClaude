@@ -1,6 +1,7 @@
 package herdr
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -66,21 +67,24 @@ func (h *fakeHerdr) run(_ context.Context, args ...string) ([]byte, error) {
 }
 
 type fakeNext struct {
-	calls int
-	err   error
+	calls   int
+	targets []domain.FocusTarget
+	err     error
 }
 
-func (n *fakeNext) Focus(domain.FocusTarget) error {
+func (n *fakeNext) Focus(t domain.FocusTarget) error {
 	n.calls++
+	n.targets = append(n.targets, t)
 
 	return n.err
 }
 
 func newTestFocuser(h *fakeHerdr, next *fakeNext) *Focuser {
 	return &Focuser{
-		run:    h.run,
-		next:   next,
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		run:     h.run,
+		next:    next,
+		clients: func(context.Context) []int { return nil },
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
@@ -198,5 +202,97 @@ func TestDefaultBinPrefersEnvThenPath(t *testing.T) {
 	// the feature is off; it must never be a non-existent path.
 	if got := DefaultBin(); got != "" && !strings.HasSuffix(got, "/herdr") {
 		t.Errorf("DefaultBin = %q, want a herdr binary path or empty", got)
+	}
+}
+
+// Herdr is a TUI: the pane's process tree ends at the herdr server under
+// launchd, so raising the window means opening the terminal that hosts an
+// attached herdr client. After the pane is focused the app focuser gets
+// that client's pid instead of the session's.
+func TestFocusRaisesTheTerminalOfTheHerdrClient(t *testing.T) {
+	h := &fakeHerdr{agentFocus: map[string]bool{"w1:p1": true}}
+	next := &fakeNext{}
+
+	f := newTestFocuser(h, next)
+	f.clients = func(context.Context) []int { return []int{73409} }
+
+	if err := f.Focus(domain.FocusTarget{PID: 111, Dir: "/Users/x/proj-a", SessionID: "sess-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(next.targets) != 1 || next.targets[0].PID != 73409 || next.targets[0].Dir != "/Users/x/proj-a" {
+		t.Errorf("app focuser targets = %+v, want the herdr client pid 73409 with the session dir", next.targets)
+	}
+}
+
+// Without an attached client (or outside Herdr) the app focuser keeps the
+// session's own pid.
+func TestFocusKeepsSessionPIDWithoutClient(t *testing.T) {
+	h := &fakeHerdr{agentFocus: map[string]bool{"w1:p1": true}}
+	next := &fakeNext{}
+
+	if err := newTestFocuser(h, next).Focus(domain.FocusTarget{PID: 111, Dir: "/Users/x/proj-a", SessionID: "sess-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(next.targets) != 1 || next.targets[0].PID != 111 {
+		t.Errorf("app focuser targets = %+v, want the session pid", next.targets)
+	}
+}
+
+// A herdr CLI that cannot answer (protocol mismatch after an update, server
+// down) is worth one warning per distinct error, not one per button press
+// and not silence.
+func TestFocusWarnsOnceWhenHerdrUnavailable(t *testing.T) {
+	var logs bytes.Buffer
+
+	h := &fakeHerdr{listErr: errors.New("protocol_mismatch: client protocol 22 is newer than server protocol 20")}
+	next := &fakeNext{}
+
+	f := newTestFocuser(h, next)
+	f.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	target := domain.FocusTarget{PID: 111, Dir: "/Users/x/proj-a", SessionID: "sess-a"}
+
+	for i := 0; i < 3; i++ {
+		if err := f.Focus(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := strings.Count(logs.String(), "level=WARN"); got != 1 {
+		t.Errorf("WARN lines after 3 identical failures = %d, want 1:\n%s", got, logs.String())
+	}
+
+	if !strings.Contains(logs.String(), "protocol_mismatch") {
+		t.Errorf("the warning must carry herdr's error text:\n%s", logs.String())
+	}
+
+	h.listErr = errors.New("connection refused")
+
+	if err := f.Focus(target); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.Count(logs.String(), "level=WARN"); got != 2 {
+		t.Errorf("WARN lines after a different failure = %d, want 2:\n%s", got, logs.String())
+	}
+}
+
+// ps -axo pid=,ppid=,tty=,comm= in the real shape: the server has no tty and
+// hangs off launchd, the attached client sits on a terminal; unrelated rows
+// and a shell whose name merely contains "herdr" are skipped.
+func TestParseClients(t *testing.T) {
+	ps := "54536     1 ??       /opt/homebrew/bin/herdr\n" +
+		"73409 70841 ttys001  herdr\n" +
+		"80001 70841 ttys002  /opt/homebrew/bin/herdr\n" +
+		"35662 35089 ttys003  claude\n" +
+		"90000 89999 ttys004  herdr-notes.sh\n"
+
+	got := parseClients([]byte(ps))
+	want := []int{73409, 80001}
+
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("parseClients = %v, want %v", got, want)
 	}
 }
