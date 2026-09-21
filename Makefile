@@ -29,11 +29,13 @@ firmware: ## Build the firmware into build/claudecontrol.uf2
 
 flash: ## Flash the Gopher Badge (pauses the agent service; picotool fallback)
 	-@launchctl bootout gui/$$(id -u)/$(AGENT_LABEL) 2>/dev/null || true
-	cd $(FIRMWARE_DIR) && $(TINYGO) flash -target=$(TARGET) . || \
+	@status=0; \
+	( cd $(FIRMWARE_DIR) && $(TINYGO) flash -target=$(TARGET) . || \
 		{ echo "RPI-RP2 volume did not mount — trying picotool (PICOBOOT, no volume)..."; \
 		  $(TINYGO) build -target=$(TARGET) -o /tmp/claudecontrol-flash.uf2 . && \
-		  picotool load -x /tmp/claudecontrol-flash.uf2; }
-	-@[ -f $(AGENT_PLIST) ] && launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST) 2>/dev/null || true
+		  picotool load -x /tmp/claudecontrol-flash.uf2; } ) || status=$$?; \
+	[ -f $(AGENT_PLIST) ] && launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST) 2>/dev/null || true; \
+	exit $$status
 
 flash-monitor: ## Flash and open the serial monitor (agent service stays off)
 	-@launchctl bootout gui/$$(id -u)/$(AGENT_LABEL) 2>/dev/null || true
