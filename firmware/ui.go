@@ -101,6 +101,9 @@ const (
 	pctWarn  = 70
 	pctAlarm = 90
 
+	// Between the forecast and the reset time on the 5-hour row.
+	etaResetSep = " / "
+
 	// Sessions page geometry.
 	sessRowBase   = 48
 	sessRowStep   = 22
@@ -593,7 +596,8 @@ func renderDashboard(f frame, linked bool) {
 		renderAll(f, linked)
 	case provClaude:
 		renderCounts(linked, f.chats, f.wait)
-		renderBarRow(0, rows3[0], f.fivePct, limitValue(f.fivePct, f.fiveRst, f.fiveEta), etaColor(f.fiveEta))
+		head, tail := fiveHourParts(f)
+		renderSplitBarRow(0, rows3[0], f.fivePct, head, etaColor(f.fiveEta), tail)
 		renderBarRow(1, rows3[1], f.weekPct, limitValue(f.weekPct, f.weekRst, ""), colValue)
 		renderClaudeThirdRow(f)
 		renderUsage("IN " + fmtTokens(f.tokIn) + "  OUT " + fmtTokens(f.tokOut))
@@ -714,6 +718,31 @@ func renderBarRow(slot int, labelBase int16, pct int, value string, valueColor c
 	}
 
 	drawLimitRow(labelBase, labelBase+barOffset, pct, value, valueColor)
+	drawn.rows[slot] = key
+}
+
+// renderSplitBarRow is renderBarRow with a two-colour value: the tail is
+// right-aligned to the row's edge in the usual colour, the head in its own
+// colour right before it.
+func renderSplitBarRow(slot int, labelBase int16, pct int, head string, headColor color.RGBA, tail string) {
+	key := head + tail + "|" + strconv.Itoa(pct)
+	if drawn.valid && drawn.rows[slot] == key {
+		return
+	}
+
+	display.FillRectangle(barX+labelColW, labelBase-rowLabelH+4, screenW-barX-labelColW-barX, rowLabelH, colBg)
+
+	headRight := int16(screenW - barX)
+
+	if tail != "" {
+		_, tailW := tinyfont.LineWidth(&freemono.Regular9pt7b, tail)
+		writeRightAligned(&freemono.Regular9pt7b, headRight, labelBase, tail, colValue)
+		headRight -= int16(tailW)
+	}
+
+	writeRightAligned(&freemono.Regular9pt7b, headRight, labelBase, head, headColor)
+	drawBar(barX, labelBase+barOffset, barW, pct)
+
 	drawn.rows[slot] = key
 }
 
@@ -967,6 +996,24 @@ func limitValue(pct int, reset, eta string) string {
 	}
 
 	return v
+}
+
+// fiveHourParts splits the 5-hour value into a head and a tail drawn in
+// different colours: with a binding forecast the head is the red "44% ETA
+// 1.4h" and the tail the white " / 3h", so the reset time stays readable
+// next to the warning; without one the whole value is the head.
+func fiveHourParts(f frame) (head, tail string) {
+	if f.fiveEta == "" || f.fivePct == pctUnknown {
+		return limitValue(f.fivePct, f.fiveRst, ""), ""
+	}
+
+	head = limitValue(f.fivePct, "", f.fiveEta)
+
+	if f.fiveRst != "" {
+		tail = etaResetSep + f.fiveRst
+	}
+
+	return head, tail
 }
 
 func creditsValue(pct int, text string) string {

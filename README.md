@@ -62,7 +62,8 @@ one row of two half-width bars:
   left of `CREDITS` when the plan has one.
 - **Burn-rate forecast** — the agent tracks how fast the 5-hour limit is
   filling; if you're on track to hit the cap *before* it resets, the badge
-  shows a red `ETA 1.4h` instead of the reset time.
+  shows a red `ETA 1.4h` next to the reset time (`44% ETA 1.4h / 3h`, the
+  reset stays white).
 - **Antigravity and Codex too** — D-pad ↑/↓ on the dashboard cycles the
   views: `CLAUDE`, one per extra assistant — `ANTIGRAVITY` (live `agy`
   chats, Gemini 5-hour and weekly quota, prompts sent today) and `CODEX`
