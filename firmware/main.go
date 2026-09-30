@@ -1,14 +1,14 @@
-// ClaudeControl firmware for the Gopher Badge (tinygo, target gopher-badge).
+// GopherClaude firmware: the Gopher Badge (target gopher-badge) and the 3.2"
+// ESP32 display (target esp32-generic).
 //
 // The badge renders the state of the coding assistants running on the host
 // (Claude Code, Antigravity, Codex): plan limits, the number of active chats
-// and an alert banner when a session waits for the user. Data arrives over USB
-// CDC serial from the companion host agent (cmd/agent in this repository); the
-// badge itself has no network.
+// and an alert banner when a session waits for the user. Data arrives from the
+// companion host agent (cmd/agent) over USB serial; the boards themselves have
+// no other input than their buttons or touch panel.
 package main
 
 import (
-	"machine"
 	"strconv"
 	"time"
 )
@@ -24,18 +24,10 @@ const (
 	// because "waiting for input" is the badge's normal resting state.
 	alertBlinkWindow = 8 * time.Second
 
-	// Two consecutive lying-flat accelerometer reads (one blink period
-	// apart) are required before muting, so a brief wobble does nothing.
-	restDebounce = 2
-
 	// Standby: with no activity for this long the screen and eyes turn
 	// off. Activity = data actually changing (tokens growing, chats/wait
 	// counts, a new alert), a button press, or the badge being moved.
 	standbyTimeout = 5 * time.Minute
-
-	// Total accelerometer delta (sum over 3 axes, micro-g) that counts as
-	// "the badge was picked up / nudged" and wakes it from standby.
-	motionWakeMicroG = 150_000
 
 	// How often to re-beep while a session keeps waiting, so a blocked
 	// chat is not forgotten. Button A / sound-off / rest all silence it.
@@ -53,14 +45,16 @@ const (
 	watchdogTimeoutMillis = 4000
 )
 
+// fwVersion is set by the Makefile from git describe; empty in ad-hoc builds.
+var fwVersion string
+
 func main() {
 	time.Sleep(usbEnumDelay)
 
 	initDisplay()
-	initButtons()
+	initInput()
 	initBuzzer()
 	initLEDs()
-	initAccel()
 
 	// Restore saved preferences before the first render so the sound icon
 	// reflects them immediately.
@@ -72,19 +66,19 @@ func main() {
 		muted        bool
 		blinkOn      bool
 		standby      bool
+		resting      bool
 		lastRx       time.Time
 		lastBlink    time.Time
 		lastSpin     time.Time
 		alertUntil   time.Time
 		lastNudge    time.Time
 		lastActivity = time.Now()
-		restTicks    int
 	)
 
-	// touch registers activity: it postpones standby and, when already in
-	// standby, wakes the badge up (the panel content is intact under the
-	// disabled backlight, so no redraw is needed).
-	touch := func(t time.Time) {
+	// activity postpones standby and, when already in standby, wakes the
+	// screen up (the panel content is intact under the disabled backlight,
+	// so no redraw is needed).
+	activity := func(t time.Time) {
 		lastActivity = t
 
 		if standby {
@@ -94,6 +88,8 @@ func main() {
 		}
 	}
 
+	println("gopherclaude firmware", fwVersion)
+
 	drawStaticUI(state)
 	render(state, linked)
 	updateLEDs(state, linked, false, blinkOn)
@@ -101,10 +97,9 @@ func main() {
 	startWatchdog()
 
 	for {
-		machine.Watchdog.Update()
+		feedWatchdog()
 
 		now := time.Now()
-		isResting := restTicks >= restDebounce
 
 		if line, ok := pollSerialLine(); ok {
 			f, err := parseFrame(line)
@@ -115,7 +110,7 @@ func main() {
 				if f.totalWait() == 0 || f.msg != state.msg {
 					// A new event unmutes — unless the badge
 					// deliberately rests on the desk.
-					muted = isResting
+					muted = resting
 				}
 
 				// Session minutes tick every minute and must not
@@ -129,7 +124,7 @@ func main() {
 				lastRx = now
 
 				if dataChanged {
-					touch(now)
+					activity(now)
 				}
 
 				// A changed assistant set rewrites the labels and
@@ -146,7 +141,7 @@ func main() {
 					beepAlert()
 				}
 
-				if !isResting && !standby {
+				if !resting && !standby {
 					updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
 				}
 
@@ -156,34 +151,34 @@ func main() {
 
 		if linked && now.Sub(lastRx) > linkTimeout {
 			linked = false
-			touch(now) // surface NO LINK before dozing off again
+			activity(now) // surface NO LINK before dozing off again
 
 			render(state, linked)
 
-			if !isResting && !standby {
+			if !resting && !standby {
 				updateLEDs(state, linked, false, blinkOn)
 			}
 		}
 
-		if btnA.pressed() {
-			touch(now)
+		switch ev := pollInput(now, standby); ev.kind {
+		case evNone:
+		case evWake:
+			activity(now)
+		case evFocus:
+			activity(now)
 
 			// Open a chat on the Mac. On the session list, open the
 			// highlighted row by its index in the frame (the list is
 			// filtered and paged locally); on the dashboard, the
-			// alerting one. Muting lives on button B / lay-flat.
+			// alerting one.
 			switch {
 			case activePage == pageSessions && listCount > 0:
 				sendCommand("focus " + strconv.Itoa(listRows[selRow]))
 			case activePage == pageDashboard && state.totalWait() > 0:
 				sendCommand("focus")
 			}
-		}
-
-		// Up/down: move the cursor on the session list, cycle the dashboard
-		// views (CLAUDE, one per extra assistant, ALL) otherwise.
-		if btnUp.pressed() {
-			touch(now)
+		case evViewPrev:
+			activity(now)
 
 			if activePage == pageSessions {
 				moveSelection(state, -1)
@@ -191,10 +186,8 @@ func main() {
 			} else {
 				switchView(state, linked, -1)
 			}
-		}
-
-		if btnDown.pressed() {
-			touch(now)
+		case evViewNext:
+			activity(now)
 
 			if activePage == pageSessions {
 				moveSelection(state, 1)
@@ -202,10 +195,23 @@ func main() {
 			} else {
 				switchView(state, linked, 1)
 			}
-		}
-
-		if btnB.pressed() {
-			touch(now)
+		case evListPagePrev:
+			activity(now)
+			pageSelection(state, -1)
+			render(state, linked)
+		case evListPageNext:
+			activity(now)
+			pageSelection(state, 1)
+			render(state, linked)
+		case evSelectRow:
+			activity(now)
+			selectRow(state, ev.row)
+			render(state, linked)
+		case evPageToggle:
+			activity(now)
+			switchPage(state, linked)
+		case evSoundToggle:
+			activity(now)
 
 			soundOff = !soundOff
 
@@ -217,17 +223,39 @@ func main() {
 
 			render(state, linked)
 			saveSettings(settings{soundOff: soundOff})
-		}
-
-		if btnLeft.pressed() || btnRight.pressed() {
-			touch(now)
-			switchPage(state, linked)
+		case evMute:
+			activity(now)
+			muted = true
+			tone(0)
+			updateLEDs(state, linked, false, blinkOn)
+		case evRest:
+			// Laid down on the desk: silence everything and confirm
+			// with a descending chirp. Rest overrides standby;
+			// pickup re-arms it.
+			resting = true
+			muted = true
+			standby = false
+			tone(0)
+			setBacklight(false)
+			ledsOff()
+			beepFlipDown()
+		case evUnrest:
+			// Picked back up: lights on (the panel content is
+			// intact), ascending chirp. Current alerts stay muted
+			// until a new event arrives.
+			resting = false
+			activity(now)
+			setBacklight(true)
+			beepFlipUp()
+			updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
+		case evOpenSettings:
+			// The settings menu arrives with the provisioning stage.
 		}
 
 		// Re-nudge: remind about a still-waiting session. Audio only —
 		// it nags even from standby (the whole point), but rest/mute/
 		// sound-off silence it.
-		if linked && state.totalWait() > 0 && !muted && !soundOff && !isResting &&
+		if linked && state.totalWait() > 0 && !muted && !soundOff && !resting &&
 			now.Sub(lastNudge) >= renudgeInterval {
 			beepNudge()
 			lastNudge = now
@@ -237,45 +265,10 @@ func main() {
 			blinkOn = !blinkOn
 			lastBlink = now
 
-			z, delta, accelRead := readAccel()
-
-			if accelRead && z < restThresholdMicroG {
-				if restTicks < restDebounce {
-					restTicks++
-				}
-			} else {
-				restTicks = 0
-			}
-
-			if accelRead && delta > motionWakeMicroG {
-				touch(now)
-			}
-
-			nowResting := restTicks >= restDebounce
-
-			switch {
-			case nowResting && !isResting:
-				// Just laid down on the desk: silence everything
-				// and confirm with a descending chirp. Rest
-				// overrides standby; pickup re-arms it.
-				muted = true
-				standby = false
-				tone(0)
-				setBacklight(false)
-				ledsOff()
-				beepFlipDown()
-			case !nowResting && isResting:
-				// Picked back up: lights on (the panel content is
-				// intact), ascending chirp. Current alerts stay
-				// muted until a new event arrives.
-				touch(now)
-				setBacklight(true)
-				beepFlipUp()
-				updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
-			case !nowResting && !standby:
-				updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
-			}
 			// While resting or in standby: screen and eyes stay dark.
+			if !resting && !standby {
+				updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
+			}
 		}
 
 		// The spinner runs on its own timer and also picks up work
@@ -284,10 +277,10 @@ func main() {
 			lastSpin = now
 
 			advanceSpinner()
-			renderSpinner(state, linked, standby || restTicks >= restDebounce)
+			renderSpinner(state, linked, standby || resting)
 		}
 
-		if !isResting && !standby && now.Sub(lastActivity) > standbyTimeout {
+		if !resting && !standby && now.Sub(lastActivity) > standbyTimeout {
 			standby = true
 			setBacklight(false)
 			ledsOff()
@@ -317,18 +310,4 @@ func promptsChanged(a, b frame) bool {
 	}
 
 	return false
-}
-
-// startWatchdog arms the hardware watchdog. A failure to configure it is not
-// fatal — the badge simply loses its self-recovery safety net.
-func startWatchdog() {
-	if err := machine.Watchdog.Configure(machine.WatchdogConfig{TimeoutMillis: watchdogTimeoutMillis}); err != nil {
-		println("watchdog configure:", err.Error())
-
-		return
-	}
-
-	if err := machine.Watchdog.Start(); err != nil {
-		println("watchdog start:", err.Error())
-	}
 }

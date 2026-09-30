@@ -2,10 +2,11 @@ package main
 
 import "machine"
 
-// machine.Serial on the Gopher Badge is USB CDC: it is initialized before
-// main() and ReadByte never blocks (returns an error when the RX ring is
-// empty). The driver's RX ring holds 512 bytes and drops what does not fit,
-// so the main loop drains it on every pass and the host paces its writes
+// machine.Serial is USB CDC on the Gopher Badge and UART0 behind the CH340
+// on the display; both are initialized before main() and ReadByte never
+// blocks (it returns an error when the RX ring is empty). The CDC ring holds
+// 512 bytes, the UART ring 128, and both drop what does not fit, so the main
+// loop drains them on every pass and the host paces its writes.
 // to that. lineBuf assembles one frame; the worst case (32 sessions with
 // the longest texts) is about 3.5 KB.
 const lineBufSize = 4096

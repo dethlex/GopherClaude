@@ -2,8 +2,9 @@ package main
 
 import (
 	"image/color"
-	"machine"
 	"strconv"
+
+	"claudecontrol/firmware/internal/layout"
 
 	"tinygo.org/x/drivers/st7789"
 	"tinygo.org/x/tinyfont"
@@ -38,11 +39,8 @@ import (
 // With a single assistant installed the badge drops everything about the
 // others: no view to switch to and no mark column in the session list.
 const (
-	screenW = 320
-	screenH = 240
-
-	spiFrequency = 32_000_000
-	panelHeight  = 320 // physical panel is 240x320; required by the driver
+	screenW = layout.ScreenW
+	screenH = layout.ScreenH
 
 	headerBaseline = 20
 	headerX        = 8
@@ -56,13 +54,13 @@ const (
 	linkDotSize = 12
 
 	// Crossed-out speaker icon, shown left of the link dot while muted.
-	soundIconX = 270
-	soundIconY = 4
-	soundIconW = 20
-	soundIconH = 16
+	soundIconX = layout.SoundIconX
+	soundIconY = layout.SoundIconY
+	soundIconW = layout.SoundIconW
+	soundIconH = layout.SoundIconH
 
 	// Spinner (work in progress), left of the speaker slot.
-	spinnerX       = 244
+	spinnerX       = layout.SpinnerX
 	spinnerY       = 4
 	spinnerW       = 20
 	spinnerH       = 16
@@ -94,7 +92,7 @@ const (
 	usageH        = 24
 	usageX        = 8
 
-	bannerTop      = 204
+	bannerTop      = layout.BannerTop
 	bannerH        = screenH - bannerTop
 	bannerBaseline = 230
 
@@ -105,18 +103,18 @@ const (
 	etaResetSep = " / "
 
 	// Sessions page geometry.
-	sessRowBase   = 48
-	sessRowStep   = 22
-	sessRowsMax   = 7
+	sessRowBase   = layout.SessRowBase
+	sessRowStep   = layout.SessRowStep
+	sessRowsMax   = layout.SessRowsMax
 	sessNameChars = 12 // room for the provider column: "✳ name........ P  12m 412k"
 	// Without the provider column (a single assistant installed) the name
 	// takes the space back.
 	sessNameWideChars = 14
-	sessRowTopPad     = 16
+	sessRowTopPad     = layout.SessRowTopPad
 
 	// Header title slot: from the last provider mark to the spinner;
 	// headerH covers the Bold9pt ascent and descent around headerBaseline.
-	headerH = 24
+	headerH = layout.HeaderH
 
 	// Session-list banner: two Regular9pt lines (title, path) inside the
 	// bannerTop..screenH band.
@@ -227,31 +225,6 @@ type uiCache struct {
 
 var drawn uiCache
 
-func initDisplay() {
-	machine.SPI0.Configure(machine.SPIConfig{
-		Frequency: spiFrequency,
-		Mode:      0,
-	})
-
-	display = st7789.New(machine.SPI0,
-		machine.TFT_RST,
-		machine.TFT_WRX,
-		machine.TFT_CS,
-		machine.TFT_BACKLIGHT)
-
-	display.Configure(st7789.Config{
-		Rotation: st7789.ROTATION_270,
-		Height:   panelHeight,
-	})
-
-	display.FillScreen(colBg)
-}
-
-// setBacklight switches the TFT backlight; the panel content is kept intact
-// underneath, so waking up needs no redraw.
-func setBacklight(on bool) {
-	display.EnableBacklight(on)
-}
 
 // providerSet lists the frame's assistant letters, Claude first, zero-padded.
 // Arrays compare with ==, so "did the set change" is one cheap check.
@@ -885,6 +858,38 @@ func moveSelection(f frame, delta int) {
 	}
 
 	selRow = (selRow + delta + listCount) % listCount
+}
+
+// selectRow puts the cursor on an absolute index of the filtered list (a
+// tapped row); an index past the list is ignored rather than clamped, so a
+// tap on the empty tail of a page does nothing.
+func selectRow(f frame, row int) {
+	buildList(f)
+
+	if row >= 0 && row < listCount {
+		selRow = row
+	}
+}
+
+// pageSelection moves the cursor a whole page, clamped at both ends: a swipe
+// past the last page stays on it instead of wrapping like the D-pad cursor.
+func pageSelection(f frame, delta int) {
+	buildList(f)
+	clampSelection()
+
+	if listCount == 0 {
+		return
+	}
+
+	next := selRow + delta*sessRowsMax
+	if next < 0 {
+		next = 0
+	}
+	if next >= listCount {
+		next = listCount - 1
+	}
+
+	selRow = next
 }
 
 type sessLine struct {

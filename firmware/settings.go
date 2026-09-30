@@ -1,3 +1,5 @@
+//go:build gopher_badge
+
 package main
 
 import "machine"
@@ -43,7 +45,7 @@ func loadSettings() settings {
 func saveSettings(s settings) {
 	// Feed the watchdog first: erase+write runs with interrupts disabled,
 	// though it completes in a few milliseconds, well under the timeout.
-	machine.Watchdog.Update()
+	feedWatchdog()
 
 	if err := machine.Flash.EraseBlocks(settingsOffset, 1); err != nil {
 		println("settings erase:", err.Error())

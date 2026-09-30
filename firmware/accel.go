@@ -1,3 +1,5 @@
+//go:build gopher_badge
+
 package main
 
 import (
