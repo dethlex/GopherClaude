@@ -225,7 +225,6 @@ type uiCache struct {
 
 var drawn uiCache
 
-
 // providerSet lists the frame's assistant letters, Claude first, zero-padded.
 // Arrays compare with ==, so "did the set change" is one cheap check.
 type providerSet [maxProviders]byte

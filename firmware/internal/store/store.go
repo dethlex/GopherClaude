@@ -25,9 +25,9 @@ const (
 
 	// Payload offsets.
 	offSSIDLen      = 0
-	offSSID         = 1   // 32 bytes
+	offSSID         = 1 // 32 bytes
 	offPasswordLen  = 33
-	offPassword     = 34  // 64 bytes
+	offPassword     = 34 // 64 bytes
 	offWiFiVerified = 98
 	offWiFiAttempts = 99
 	offHasIdentity  = 100

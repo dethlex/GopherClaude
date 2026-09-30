@@ -10,7 +10,7 @@ import (
 const (
 	// The accelerometer is sampled at the blink rate, as before the input
 	// seam existed; two consecutive lying-flat reads mute (restDebounce).
-	accelPeriod = blinkPeriod
+	accelPeriod  = blinkPeriod
 	restDebounce = 2
 
 	// Total accelerometer delta (sum over 3 axes, micro-g) that counts as
