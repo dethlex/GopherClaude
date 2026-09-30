@@ -20,8 +20,7 @@ const (
 	// CDC ignores the baud rate, but the library requires one.
 	baudRate = 115200
 
-	defaultPortGlob = "/dev/cu.usbmodem*"
-	autoPort        = "auto"
+	autoPort = "auto"
 
 	echoReadTimeout = 50 * time.Millisecond
 	echoBufSize     = 256
@@ -52,7 +51,15 @@ const (
 	frameChunkPause = 10 * time.Millisecond
 )
 
-var errNoPort = errors.New("no usb serial port found")
+var (
+	// The badge enumerates as a USB CDC device (usbmodem); the display sits
+	// behind a CH340, which macOS names usbserial or wchusbserial depending
+	// on the driver in use. The first glob is preferred when both are
+	// plugged in: the badge is the primary device of this agent.
+	portGlobs = []string{"/dev/cu.usbmodem*", "/dev/cu.usbserial*", "/dev/cu.wchusbserial*"}
+
+	errNoPort = errors.New("no usb serial port found")
+)
 
 // SerialSink writes frames to the badge. The port is (re)opened lazily: the
 // badge re-enumerates after flashing and may change its device name, so every
@@ -133,6 +140,12 @@ func (s *SerialSink) open() error {
 		return fmt.Errorf("open %q: %w", path, err)
 	}
 
+	// The CH340's DTR/RTS lines feed the ESP32's auto-reset circuit; some
+	// drivers assert them on open. Release both so opening the port does
+	// not reboot the display (a no-op for the badge's CDC port).
+	_ = port.SetDTR(false)
+	_ = port.SetRTS(false)
+
 	if err := port.SetReadTimeout(echoReadTimeout); err != nil {
 		s.logger.Warn("set read timeout", "error", err)
 	}
@@ -149,25 +162,48 @@ func (s *SerialSink) resolvePath() (string, error) {
 		return s.requested, nil
 	}
 
-	matches, err := filepath.Glob(defaultPortGlob)
-	if err != nil {
-		return "", fmt.Errorf("glob %q: %w", defaultPortGlob, err)
+	var matches []string
+	for _, g := range portGlobs {
+		found, err := filepath.Glob(g)
+		if err != nil {
+			return "", fmt.Errorf("glob %q: %w", g, err)
+		}
+		matches = append(matches, found...)
 	}
 
-	if len(matches) == 0 {
+	chosen := pickPort(matches)
+	if chosen == "" {
 		return "", errNoPort
 	}
 
-	sort.Strings(matches)
-
 	if len(matches) > 1 {
 		s.logger.Warn("multiple usb serial ports, using first",
-			"chosen", matches[0],
+			"chosen", chosen,
 			"all", strings.Join(matches, ","),
 		)
 	}
 
-	return matches[0], nil
+	return chosen, nil
+}
+
+// pickPort chooses among the globbed ports: by glob order (badge first),
+// then alphabetically within a kind, so the choice is stable across runs.
+func pickPort(matches []string) string {
+	for _, g := range portGlobs {
+		var kind []string
+		for _, m := range matches {
+			if ok, _ := filepath.Match(g, m); ok {
+				kind = append(kind, m)
+			}
+		}
+		if len(kind) > 0 {
+			sort.Strings(kind)
+
+			return kind[0]
+		}
+	}
+
+	return ""
 }
 
 func (s *SerialSink) drop() {

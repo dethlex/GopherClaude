@@ -70,3 +70,23 @@ func TestWriteChunkedReportsWriteError(t *testing.T) {
 		t.Error("writeChunked = nil error, want the port's")
 	}
 }
+
+func TestPickPortPrefersBadge(t *testing.T) {
+	got := pickPort([]string{"/dev/cu.usbserial-110", "/dev/cu.usbmodem1234", "/dev/cu.wchusbserial-5"})
+	if got != "/dev/cu.usbmodem1234" {
+		t.Fatalf("got %q, want the usbmodem port", got)
+	}
+}
+
+func TestPickPortSortsWithinAKind(t *testing.T) {
+	got := pickPort([]string{"/dev/cu.usbserial-2", "/dev/cu.usbserial-1"})
+	if got != "/dev/cu.usbserial-1" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPickPortEmpty(t *testing.T) {
+	if got := pickPort(nil); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
