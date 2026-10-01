@@ -18,6 +18,12 @@ FW_LDFLAGS := -X main.fwVersion=$(FW_VERSION)
 # the default 8 KB corrupted the scheduler on the first run, 12 KB hung.
 CYD_STACK := 16KB
 
+# Development bench until the Hub exists: bake the agent's address and id
+# into the display image (make flash-cyd DEV_AGENT=192.168.31.190:7070 DEV_AGENT_ID=<hex from ~/.claude-badge/agent.json>).
+DEV_AGENT    ?=
+DEV_AGENT_ID ?=
+CYD_LDFLAGS  := $(FW_LDFLAGS) $(if $(DEV_AGENT),-X main.devAgentAddr=$(DEV_AGENT) -X main.devAgentID=$(DEV_AGENT_ID),)
+
 # The display is flashed with espflasher writing only the image region;
 # `tinygo flash` erases the whole chip and with it the settings sectors.
 ESPFLASHER := go run tinygo.org/x/espflasher@v0.8.1
@@ -41,7 +47,7 @@ help: ## Show this help
 firmware: ## Build both firmware images (badge uf2 + display bin)
 	@mkdir -p build
 	cd $(FIRMWARE_DIR) && $(TINYGO) build -target=$(TARGET) -ldflags "$(FW_LDFLAGS)" -o ../$(UF2) .
-	cd $(FIRMWARE_DIR) && $(TINYGO) build -target=$(CYD_TARGET) -stack-size=$(CYD_STACK) -ldflags "$(FW_LDFLAGS)" -o ../$(CYD_BIN) .
+	cd $(FIRMWARE_DIR) && $(TINYGO) build -target=$(CYD_TARGET) -stack-size=$(CYD_STACK) -ldflags "$(CYD_LDFLAGS)" -o ../$(CYD_BIN) .
 	@ls -la $(UF2) $(CYD_BIN)
 
 flash: ## Flash the Gopher Badge (pauses the agent service; picotool fallback)
@@ -74,7 +80,7 @@ test-firmware: ## Host tests of the hardware-free firmware packages
 agent: ## Build the host agent into bin/
 	go build -o $(AGENT_BIN) ./cmd/agent
 
-run: agent ## Build and run the host agent in the foreground
+run: agent ## Build and run the host agent in the foreground (flags: -listen, -dev-accept-unpaired, -state-dir)
 	./$(AGENT_BIN)
 
 dry-run: agent ## Run the agent without the badge (frames printed to the log)
