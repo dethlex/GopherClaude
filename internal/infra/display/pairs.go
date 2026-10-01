@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/dethlex/GopherClaude/internal/infra/atomicfile"
 )
 
 // Device is a paired display as the agent remembers it.
@@ -122,5 +124,5 @@ func (p *PairStore) save() error {
 	list := p.sortedLocked()
 	p.mu.Unlock()
 
-	return writeFileAtomic(p.path, list)
+	return atomicfile.WriteJSON(p.path, list, stateFileMode)
 }

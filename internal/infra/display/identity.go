@@ -11,17 +11,17 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
+
+	"github.com/dethlex/GopherClaude/internal/infra/atomicfile"
 )
 
 // Hex lengths of the identifiers on the wire.
 const (
-	IDLen    = 32 // 16 random bytes
-	TokenLen = 64 // HMAC-SHA256
-	keyBytes = 16
-	tokBytes = 32
-
-	fileMode = 0o600
+	IDLen         = 32 // 16 random bytes
+	TokenLen      = 64 // HMAC-SHA256
+	keyBytes      = 16
+	tokBytes      = 32
+	stateFileMode = 0o600
 )
 
 // Identity is this agent as the Hub and the displays know it: a random id
@@ -52,7 +52,7 @@ func LoadOrCreateIdentity(path string) (Identity, error) {
 	}
 
 	id = Identity{ID: randomHex(keyBytes), Token: randomHex(tokBytes)}
-	if err := writeFileAtomic(path, id); err != nil {
+	if err := atomicfile.WriteJSON(path, id, stateFileMode); err != nil {
 		return Identity{}, err
 	}
 
@@ -68,41 +68,4 @@ func randomHex(n int) string {
 	}
 
 	return hex.EncodeToString(b)
-}
-
-// writeFileAtomic writes v as JSON through a temp file in the same
-// directory, so a crash never leaves a half-written file behind.
-func writeFileAtomic(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-
-		return err
-	}
-	if err := tmp.Chmod(fileMode); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-
-		return err
-	}
-
-	return os.Rename(tmpName, path)
 }
