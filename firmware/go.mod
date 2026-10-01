@@ -1,9 +1,11 @@
 module claudecontrol/firmware
 
-go 1.24
+go 1.24.4
 
 require (
-	tinygo.org/x/drivers v0.35.0
+	github.com/soypat/lneto v0.3.2
+	tinygo.org/x/drivers v0.36.0
+	tinygo.org/x/espradio v0.3.0
 	tinygo.org/x/tinyfont v0.7.0
 )
 
