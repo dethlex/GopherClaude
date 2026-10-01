@@ -34,7 +34,7 @@ AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT_LABEL).plist
 
 .DEFAULT_GOAL := help
 
-.PHONY: help firmware flash flash-cyd flash-monitor monitor agent run dry-run demo-eyes \
+.PHONY: help firmware flash flash-cyd flash-monitor monitor agent hub run-hub run dry-run demo-eyes \
         test test-firmware vet install-hooks uninstall-hooks install-agent uninstall-agent \
         tinygo-update clean
 
@@ -79,6 +79,14 @@ test-firmware: ## Host tests of the hardware-free firmware packages
 
 agent: ## Build the host agent into bin/
 	go build -o $(AGENT_BIN) ./cmd/agent
+
+HUB_BIN := bin/gopherclaude-hub
+
+hub: ## Build the Hub (pairing and directory service)
+	go build -o $(HUB_BIN) ./cmd/hub
+
+run-hub: hub ## Run the Hub locally on 127.0.0.1:8080 with its state in build/
+	HUB_LISTEN=127.0.0.1:8080 HUB_DATA=build/hub-state.json HUB_DEBUG=1 ./$(HUB_BIN)
 
 run: agent ## Build and run the host agent in the foreground (flags: -listen, -dev-accept-unpaired, -state-dir)
 	./$(AGENT_BIN)
