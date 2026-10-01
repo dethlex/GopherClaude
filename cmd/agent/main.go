@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"github.com/dethlex/GopherClaude/internal/infra/badge"
 	"github.com/dethlex/GopherClaude/internal/infra/claudefs"
 	"github.com/dethlex/GopherClaude/internal/infra/codexfs"
+	"github.com/dethlex/GopherClaude/internal/infra/display"
 	"github.com/dethlex/GopherClaude/internal/infra/google"
 	"github.com/dethlex/GopherClaude/internal/infra/herdr"
 	"github.com/dethlex/GopherClaude/internal/infra/hooks"
@@ -51,16 +53,19 @@ func run() error {
 	}
 
 	var (
-		portFlag     = flag.String("port", "auto", "serial port path, or 'auto' to glob /dev/cu.usbmodem*")
-		intervalFlag = flag.Duration("interval", defaultInterval, "how often to send a frame")
-		claudeDir    = flag.String("claude-dir", filepath.Join(home, ".claude"), "Claude Code data directory")
-		agyDir       = flag.String("agy-dir", filepath.Join(home, ".gemini", "antigravity-cli"), "Antigravity CLI data directory")
-		codexDir     = flag.String("codex-dir", defaultCodexDir(home), "Codex data directory (CODEX_HOME)")
-		herdrBin     = flag.String("herdr", herdr.DefaultBin(), "path to the herdr CLI for exact pane focus; empty disables it")
-		eventsFile   = flag.String("events", filepath.Join(home, ".claude-badge", "events.jsonl"), "hook events file")
-		dryRun       = flag.Bool("dry-run", false, "log frames instead of writing to the serial port")
-		debug        = flag.Bool("debug", false, "verbose logging")
-		demo         = flag.Bool("demo", false, "cycle synthetic states to compare the badge's eye patterns")
+		portFlag       = flag.String("port", "auto", "serial port path, or 'auto' to glob /dev/cu.usbmodem*")
+		intervalFlag   = flag.Duration("interval", defaultInterval, "how often to send a frame")
+		claudeDir      = flag.String("claude-dir", filepath.Join(home, ".claude"), "Claude Code data directory")
+		agyDir         = flag.String("agy-dir", filepath.Join(home, ".gemini", "antigravity-cli"), "Antigravity CLI data directory")
+		codexDir       = flag.String("codex-dir", defaultCodexDir(home), "Codex data directory (CODEX_HOME)")
+		herdrBin       = flag.String("herdr", herdr.DefaultBin(), "path to the herdr CLI for exact pane focus; empty disables it")
+		eventsFile     = flag.String("events", filepath.Join(home, ".claude-badge", "events.jsonl"), "hook events file")
+		dryRun         = flag.Bool("dry-run", false, "log frames instead of writing to the serial port")
+		debug          = flag.Bool("debug", false, "verbose logging")
+		demo           = flag.Bool("demo", false, "cycle synthetic states to compare the badge's eye patterns")
+		listenAddr     = flag.String("listen", ":7070", "TCP address the WiFi displays dial; empty disables the listener")
+		stateDir       = flag.String("state-dir", filepath.Join(home, ".claude-badge"), "where agent.json and devices.json live")
+		acceptUnpaired = flag.Bool("dev-accept-unpaired", false, "DEVELOPMENT: accept any display's HELLO and record its token")
 	)
 
 	flag.Parse()
@@ -94,9 +99,37 @@ func run() error {
 
 	monitor := usecase.NewMonitor(sources, logger)
 
-	var sink domain.Sink = badge.NewSerialSink(*portFlag, logger)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	var serialSink domain.Sink = badge.NewSerialSink(*portFlag, logger)
 	if *dryRun {
-		sink = badge.NewDryRunSink(logger)
+		serialSink = badge.NewDryRunSink(logger)
+	}
+	fanout := usecase.NewFanout(logger, serialSink)
+	var sink domain.Sink = fanout
+
+	if *listenAddr != "" {
+		identity, err := display.LoadOrCreateIdentity(filepath.Join(*stateDir, "agent.json"))
+		if err != nil {
+			return fmt.Errorf("agent identity: %w", err)
+		}
+		pairs, err := display.LoadPairStore(filepath.Join(*stateDir, "devices.json"))
+		if err != nil {
+			return fmt.Errorf("pair store: %w", err)
+		}
+		listener := display.NewListener(display.ListenerConfig{
+			Addr:           *listenAddr,
+			AgentID:        identity.ID,
+			Pairs:          pairs,
+			Fanout:         fanout,
+			AcceptUnpaired: *acceptUnpaired,
+			Logger:         logger,
+		})
+		if _, err := listener.Start(ctx); err != nil {
+			return fmt.Errorf("listen for displays: %w", err)
+		}
+		logger.Info("agent identity", "module", "main", "agent_id", identity.ID, "paired_displays", len(pairs.Devices()))
 	}
 
 	var focuser domain.Focuser = host.NewWindowFocuser(logger)
@@ -112,9 +145,6 @@ func run() error {
 			logger.Warn("close sink", "error", err)
 		}
 	}()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	logger.Info("agent started",
 		"module", "main",
@@ -147,7 +177,7 @@ func run() error {
 
 		cmds, err := sink.Send(snapshot)
 		if err != nil {
-			logger.Warn("send frame", "module", "main", "error", err)
+			logger.Debug("send frame", "module", "main", "error", err)
 		} else {
 			attrs := []any{
 				"module", "main",
