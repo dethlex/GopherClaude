@@ -46,6 +46,19 @@ var (
 	radioBackoff = lneto.BackoffStrategy(func(_ uint) time.Duration { return radioPollTime })
 )
 
+// radioCall runs f on a fresh goroutine and waits for it. The WiFi blob
+// needs several KB of stack below its caller; the boot and settings screens
+// sit deep in the main goroutine (8 KB stacks) and overflowed it on the
+// first run, which showed up as a corrupted scheduler a few frames later.
+func radioCall(f func()) {
+	done := make(chan struct{})
+	go func() {
+		f()
+		close(done)
+	}()
+	<-done
+}
+
 // radioStart powers the radio once; later calls are no-ops.
 func radioStart() error {
 	if radioStarted {

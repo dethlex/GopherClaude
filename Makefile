@@ -13,6 +13,16 @@ TINYGO     := tinygo
 FW_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null)
 FW_LDFLAGS := -X main.fwVersion=$(FW_VERSION)
 
+# TinyGo runs ESP32 interrupt handlers on the interrupted goroutine's stack,
+# and the WiFi blob's handler needs several KB on top of our deepest frames:
+# the default 8 KB corrupted the scheduler on the first run, 12 KB hung.
+CYD_STACK := 16KB
+
+# The display is flashed with espflasher writing only the image region;
+# `tinygo flash` erases the whole chip and with it the settings sectors.
+ESPFLASHER := go run tinygo.org/x/espflasher@v0.8.1
+CYD_IMAGE_OFFSET := 0x1000
+
 AGENT_LABEL := com.claudecontrol.badge-agent
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/$(AGENT_LABEL).plist
 
@@ -31,7 +41,7 @@ help: ## Show this help
 firmware: ## Build both firmware images (badge uf2 + display bin)
 	@mkdir -p build
 	cd $(FIRMWARE_DIR) && $(TINYGO) build -target=$(TARGET) -ldflags "$(FW_LDFLAGS)" -o ../$(UF2) .
-	cd $(FIRMWARE_DIR) && $(TINYGO) build -target=$(CYD_TARGET) -ldflags "$(FW_LDFLAGS)" -o ../$(CYD_BIN) .
+	cd $(FIRMWARE_DIR) && $(TINYGO) build -target=$(CYD_TARGET) -stack-size=$(CYD_STACK) -ldflags "$(FW_LDFLAGS)" -o ../$(CYD_BIN) .
 	@ls -la $(UF2) $(CYD_BIN)
 
 flash: ## Flash the Gopher Badge (pauses the agent service; picotool fallback)
@@ -44,9 +54,9 @@ flash: ## Flash the Gopher Badge (pauses the agent service; picotool fallback)
 	[ -f $(AGENT_PLIST) ] && launchctl bootstrap gui/$$(id -u) $(AGENT_PLIST) 2>/dev/null || true; \
 	exit $$status
 
-flash-cyd: ## Flash the 3.2" ESP32 display over its CH340 port (PORT=... to choose)
+flash-cyd: firmware ## Flash the 3.2" ESP32 display over its CH340 port, keeping its settings (PORT=... to choose)
 	@test -n "$(PORT)" || { echo "no CH340 port found (/dev/cu.usbserial*); pass PORT=..."; exit 1; }
-	cd $(FIRMWARE_DIR) && $(TINYGO) flash -target=$(CYD_TARGET) -port $(PORT) -ldflags "$(FW_LDFLAGS)" .
+	$(ESPFLASHER) -port $(PORT) -offset $(CYD_IMAGE_OFFSET) $(CYD_BIN)
 
 flash-monitor: ## Flash and open the serial monitor (agent service stays off)
 	-@launchctl bootout gui/$$(id -u)/$(AGENT_LABEL) 2>/dev/null || true

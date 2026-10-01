@@ -3,6 +3,7 @@
 package main
 
 import (
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -88,7 +89,11 @@ func provisionNetwork(rec store.Record) store.Record {
 		modalClear()
 		modalTitle("WI-FI NETWORKS")
 		modalMessage("SCANNING", "")
-		scan, err := radioScan()
+		var (
+			scan []provision.Network
+			err  error
+		)
+		radioCall(func() { scan, err = radioScan() })
 		if err != nil {
 			modalMessage("SCAN FAILED", err.Error())
 			modalBand("RESCAN")
@@ -289,7 +294,11 @@ func connectScreen(rec *store.Record) bool {
 	modalMessage("CONNECTING", ssid+"  attempt "+strconv.Itoa(int(rec.WiFiAttempts)+1))
 	modalBand("CHANGE NETWORK")
 
-	ip, err := radioConnect(ssid, password)
+	var (
+		ip  netip.Addr
+		err error
+	)
+	radioCall(func() { ip, err = radioConnect(ssid, password) })
 	if err == nil {
 		rec.WiFiVerified = true
 		rec.WiFiAttempts = 0
