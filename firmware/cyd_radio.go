@@ -2,6 +2,19 @@
 
 package main
 
+/*
+static inline unsigned int gc_intenable_get(void) {
+	unsigned int v;
+	__asm__ volatile("rsr.intenable %0" : "=a"(v));
+	return v;
+}
+
+static inline void gc_intenable_set(unsigned int v) {
+	__asm__ volatile("wsr.intenable %0; rsync" : : "a"(v));
+}
+*/
+import "C"
+
 import (
 	"net/netip"
 	"time"
@@ -38,6 +51,13 @@ var (
 	radioUp      bool
 	radioIP      netip.Addr
 
+	// tinygoInterrupts is the CPU INTENABLE mask before the radio started:
+	// TinyGo's UART (8) and timer (9) lines. The WiFi blob rewrites the
+	// whole register during Start/Connect (observed 0x300 → 0x70000000),
+	// which silently kills serial reception; espradio only protects the
+	// mask inside its own ISR passes, so we put our bits back ourselves.
+	tinygoInterrupts uint32
+
 	radioDev      *espradio.NetDev
 	radioStack    *espradio.Stack
 	radioGo       xnet.StackGo
@@ -50,13 +70,39 @@ var (
 // needs several KB of stack below its caller; the boot and settings screens
 // sit deep in the main goroutine (8 KB stacks) and overflowed it on the
 // first run, which showed up as a corrupted scheduler a few frames later.
+// While it waits, the main goroutine keeps answering the host: a connect
+// takes seconds, and an agent that hears nothing for 8 s reopens the port,
+// which resets the board through the CH340's DTR line.
 func radioCall(f func()) {
 	done := make(chan struct{})
 	go func() {
 		f()
 		close(done)
 	}()
-	<-done
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		radioGuardInterrupts()
+		feedWatchdog()
+		drainSerial()
+		time.Sleep(touchPoll)
+	}
+}
+
+// radioGuardInterrupts re-enables TinyGo's CPU interrupt lines when the
+// blob has cleared them. Cheap (one special-register read), so it runs after
+// every radio operation and from the input poll every 10 ms.
+func radioGuardInterrupts() {
+	if tinygoInterrupts == 0 {
+		return
+	}
+	cur := uint32(C.gc_intenable_get())
+	if cur&tinygoInterrupts != tinygoInterrupts {
+		C.gc_intenable_set(C.uint(cur | tinygoInterrupts))
+	}
 }
 
 // radioStart powers the radio once; later calls are no-ops.
@@ -64,6 +110,7 @@ func radioStart() error {
 	if radioStarted {
 		return nil
 	}
+	tinygoInterrupts = uint32(C.gc_intenable_get())
 	if err := espradio.Enable(espradio.Config{Logging: espradio.LogLevelError}); err != nil {
 		return err
 	}
@@ -71,6 +118,7 @@ func radioStart() error {
 		return err
 	}
 	radioStarted = true
+	radioGuardInterrupts()
 
 	return nil
 }
@@ -82,6 +130,7 @@ func radioScan() ([]provision.Network, error) {
 		return nil, err
 	}
 	aps, err := espradio.Scan()
+	radioGuardInterrupts()
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +187,7 @@ func radioConnect(ssid, password string) (netip.Addr, error) {
 	}
 	radioIP = netip.AddrFrom4(res.AssignedAddr4)
 	radioUp = true
+	radioGuardInterrupts()
 
 	return radioIP, nil
 }

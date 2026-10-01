@@ -143,6 +143,8 @@ func sampleGesture(now time.Time) (ev gesture.Event, began bool) {
 // gestures onto the current page. A touch during standby only wakes the
 // screen: the press is swallowed so the wake tap never lands on a row.
 func pollInput(now time.Time, standby bool) input {
+	radioGuardInterrupts()
+
 	ev, began := sampleGesture(now)
 
 	if standby && began {
