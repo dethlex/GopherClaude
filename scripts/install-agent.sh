@@ -9,6 +9,7 @@ AGENT_DIR="$HOME/.claude-badge"
 BIN="$AGENT_DIR/claude-badge-agent"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$AGENT_DIR/agent.log"
+CRASH_LOG="$AGENT_DIR/agent.crash.log"
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 GUI_DOMAIN="gui/$(id -u)"
 
@@ -34,6 +35,8 @@ cat > "$PLIST" <<EOF
     <key>ProgramArguments</key>
     <array>
         <string>$BIN</string>
+        <string>-log</string>
+        <string>$LOG</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -41,10 +44,11 @@ cat > "$PLIST" <<EOF
     <true/>
     <key>ProcessType</key>
     <string>Background</string>
+    <!-- The agent rotates $LOG itself; only a crash before the logger exists lands here. -->
     <key>StandardOutPath</key>
-    <string>$LOG</string>
+    <string>$CRASH_LOG</string>
     <key>StandardErrorPath</key>
-    <string>$LOG</string>
+    <string>$CRASH_LOG</string>
 </dict>
 </plist>
 EOF
@@ -53,5 +57,5 @@ launchctl bootstrap "$GUI_DOMAIN" "$PLIST"
 
 echo "Service installed and started: $LABEL"
 echo "  status: launchctl print $GUI_DOMAIN/$LABEL | grep state"
-echo "  logs:   tail -f $LOG"
+echo "  logs:   tail -f $LOG   (rotated at 8 MB, 3 generations kept; crashes: $CRASH_LOG)"
 echo "  stop:   make uninstall-agent"

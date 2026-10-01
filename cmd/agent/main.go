@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -26,14 +27,19 @@ import (
 	"github.com/dethlex/GopherClaude/internal/infra/herdr"
 	"github.com/dethlex/GopherClaude/internal/infra/hooks"
 	"github.com/dethlex/GopherClaude/internal/infra/host"
+	"github.com/dethlex/GopherClaude/internal/infra/logfile"
 	"github.com/dethlex/GopherClaude/internal/infra/openai"
 	"github.com/dethlex/GopherClaude/internal/usecase"
 )
 
 const (
 	defaultInterval = 2 * time.Second
-	agyBinaryName   = "agy"
-	codexHomeEnv    = "CODEX_HOME"
+
+	// The service runs for months; launchd never rotates what it redirects.
+	logMaxBytes   = 8 << 20
+	logKeep       = 3
+	agyBinaryName = "agy"
+	codexHomeEnv  = "CODEX_HOME"
 )
 
 // agyInstallDirs are where agy usually ends up ($HOME is expanded).
@@ -66,6 +72,7 @@ func run() error {
 		listenAddr     = flag.String("listen", ":7070", "TCP address the WiFi displays dial; empty disables the listener")
 		stateDir       = flag.String("state-dir", filepath.Join(home, ".claude-badge"), "where agent.json and devices.json live")
 		acceptUnpaired = flag.Bool("dev-accept-unpaired", false, "DEVELOPMENT: accept any display's HELLO and record its token")
+		logPath        = flag.String("log", "", "log file, rotated by size (empty: stderr)")
 	)
 
 	flag.Parse()
@@ -75,7 +82,16 @@ func run() error {
 		level = slog.LevelDebug
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	var logOut io.Writer = os.Stderr
+	if *logPath != "" {
+		w, err := logfile.Open(*logPath, logMaxBytes, logKeep)
+		if err != nil {
+			return fmt.Errorf("open log: %w", err)
+		}
+		defer w.Close()
+		logOut = w
+	}
+	logger := slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: level}))
 
 	events := hooks.NewEventLog(*eventsFile)
 
