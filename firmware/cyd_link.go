@@ -3,59 +3,77 @@
 package main
 
 import (
-	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
 	"device/esp"
 	"encoding/hex"
-	"net"
+	"machine"
 	"net/netip"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 
-	"tinygo.org/x/drivers/netdev"
+	"github.com/soypat/lneto/tcp"
 
 	"claudecontrol/firmware/internal/hello"
 )
 
-// Development overrides until the Hub exists (stage A4): where the agent
-// is and who it is, baked in with -ldflags -X. With both set, they win over
-// the record's cache so a test bench never chases a stale address.
+// Development overrides until the Hub exists: where the agent is and who it
+// is, baked in with -ldflags -X. With both set, they win over the record's
+// cache so a test bench never chases a stale address.
 var (
 	devAgentAddr string
 	devAgentID   string
 )
 
+// The link runs on the main goroutine as a state machine polled from
+// pollLine: after WiFi is up the heap has ~20 KB left and a goroutine costs
+// 16 KB of it, so lneto's TCP connection is driven directly with static
+// buffers instead of the net package plus a reader goroutine.
 const (
 	linkDialTimeout  = 5 * time.Second
 	linkHelloTimeout = 5 * time.Second
 	linkIdleTimeout  = 10 * time.Second // the agent sends every 2 s
 	linkRetryPause   = 5 * time.Second
-	linkWriteTimeout = time.Second
-	linkQueueDepth   = 2    // frames waiting for the core; older ones are stale
-	linkReadBuf      = 8192 // a frame is ~3.5 KB
-	linkDNSRetries   = 3
-	agentAddrsStored = 3
-	rngWordBytes     = 4
+	serialAckPeriod  = 2 * time.Second // keeps a USB host's echo timer quiet while frames come over WiFi
+
+	linkRxBufSize = 2048 // TCP receive window: a frame (~3.5 KB) arrives in two
+	linkTxBufSize = 512  // HELLO (~130 bytes), CMD and echo lines
+	linkTxQueue   = 2    // unacknowledged segments in flight
+
+	ephemeralPortBase = 49152
+	ephemeralPortSpan = 16384
+	agentAddrsStored  = 3
+	rngWordBytes      = 4
+)
+
+type linkPhase uint8
+
+const (
+	linkDown     linkPhase = iota
+	linkDialing            // SYN out, waiting for the handshake
+	linkGreeting           // HELLO out, waiting for WELCOME
+	linkUp
 )
 
 var (
-	linkMu    sync.Mutex
-	linkConn  net.Conn // nil while down
-	linkLines = hello.NewLineQueue(linkQueueDepth)
+	linkConn    tcp.Conn
+	linkRx      [linkRxBufSize]byte
+	linkTx      [linkTxBufSize]byte
+	linkLine    [lineBufSize]byte // a frame being assembled; serial has its own
+	linkLineLen int
+
+	phase        linkPhase
+	linkNext     time.Time // when the next dial may start
+	linkDeadline time.Time // handshake deadline, then the idle deadline
+	linkTarget   int       // which cached address to try next
+	linkAddr     string    // address of the connection in progress
+	linkAgentID  string    // agent id the token was derived for
 
 	// tcpFrame remembers which link delivered the frame the core is about
 	// to answer, so the echo goes back the same way.
 	tcpFrame bool
 
-	// pendingAgent is the address that just completed a handshake; the main
-	// goroutine stores it (flash writes stay on the goroutine that has
-	// always done them), see pollLine.
-	pendingAgent struct {
-		addr, id string
-	}
+	lastSerialAck time.Time
 )
 
 // ensureIdentity gives the display its random id and secret on first use.
@@ -143,94 +161,176 @@ func rememberAgent(addr, agentID string) {
 	writeStore(rec)
 }
 
-// startLink makes the IP stack available to the net package and starts the
-// link goroutine. Called once, after the radio is up.
+// startLink arms the dialer; called once, after the radio is up.
 func startLink() {
 	ensureIdentity()
-	netdev.UseNetdev(&radioNetdev{})
-	go linkLoop()
+	phase = linkDown
+	linkNext = time.Now()
 }
 
-// linkLoop keeps one connection to the agent alive: dial, HELLO, WELCOME,
-// then read frames until the connection dies, then try again.
-func linkLoop() {
-	for {
-		addrs, agentID := agentTargets()
-		if len(addrs) == 0 {
-			time.Sleep(linkRetryPause)
+// linkStep advances the connection state machine; it never blocks.
+func linkStep(now time.Time) {
+	switch phase {
+	case linkDown:
+		if radioUp && !now.Before(linkNext) {
+			linkDial(now)
+		}
+	case linkDialing:
+		switch st := linkConn.State(); {
+		case st == tcp.StateEstablished:
+			id := hex.EncodeToString(settingsRecord.DeviceID[:])
+			if !writeTCP(hello.Line(id, fwVersion, deviceToken(linkAgentID))) {
+				linkDrop(now)
 
+				return
+			}
+			phase = linkGreeting
+			linkDeadline = now.Add(linkHelloTimeout)
+		case st == tcp.StateSynSent || st == tcp.StateSynRcvd || linkConn.AwaitingSynSend():
+			if now.After(linkDeadline) {
+				linkDrop(now)
+			}
+		default:
+			// Refused or reset: the agent is not there (yet).
+			linkDrop(now)
+		}
+	case linkGreeting, linkUp:
+		if linkConn.State().IsClosed() || now.After(linkDeadline) {
+			linkDrop(now)
+		}
+	}
+}
+
+// linkDial starts a connection attempt towards the next known address.
+func linkDial(now time.Time) {
+	linkNext = now.Add(linkRetryPause)
+
+	addrs, agentID := agentTargets()
+	if len(addrs) == 0 {
+		return
+	}
+	linkTarget %= len(addrs)
+	addr := addrs[linkTarget]
+	linkTarget++
+
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil || !ap.Addr().Is4() {
+		return
+	}
+	err = linkConn.Configure(tcp.ConnConfig{
+		RxBuf:             linkRx[:],
+		TxBuf:             linkTx[:],
+		TxPacketQueueSize: linkTxQueue,
+		RWBackoff:         radioBackoff,
+	})
+	if err != nil {
+		println("link: configure:", err.Error())
+
+		return
+	}
+	stack := radioStack.LnetoStack()
+	port := uint16(ephemeralPortBase + stack.Prand32()%ephemeralPortSpan)
+	if err := stack.DialTCP(&linkConn, port, ap); err != nil {
+		// ARP still resolving, or no free TCP slot yet: try again later.
+		println("link: dial:", err.Error())
+
+		return
+	}
+
+	linkAddr, linkAgentID = addr, agentID
+	phase = linkDialing
+	linkDeadline = now.Add(linkDialTimeout)
+}
+
+// linkDrop abandons the current connection and schedules the next attempt.
+func linkDrop(now time.Time) {
+	linkConn.Abort()
+	phase = linkDown
+	linkLineLen = 0
+	linkNext = now.Add(linkRetryPause)
+}
+
+// linkReadLine returns the next complete line received over TCP. The
+// WELCOME line is consumed here; frames are handed to the caller.
+func linkReadLine(now time.Time) (string, bool) {
+	if phase < linkGreeting {
+		return "", false
+	}
+	for {
+		if line, ok := takeLinkLine(); ok {
+			return linkHandle(line, now)
+		}
+		if linkConn.BufferedInput() == 0 {
+			return "", false
+		}
+		if linkLineLen >= len(linkLine) {
+			linkLineLen = 0 // an oversized line can only be garbage
+		}
+		n, err := linkConn.Read(linkLine[linkLineLen:])
+		if n > 0 {
+			linkLineLen += n
+			linkDeadline = now.Add(linkIdleTimeout)
+		}
+		if err != nil || n == 0 {
+			return "", false
+		}
+	}
+}
+
+// takeLinkLine cuts the first complete line out of the assembly buffer.
+func takeLinkLine() (string, bool) {
+	for i := 0; i < linkLineLen; i++ {
+		if linkLine[i] != '\n' {
 			continue
 		}
-		for _, addr := range addrs {
-			serveLink(addr, agentID)
+		end := i
+		if end > 0 && linkLine[end-1] == '\r' {
+			end--
 		}
-		time.Sleep(linkRetryPause)
+		line := string(linkLine[:end])
+		linkLineLen = copy(linkLine[:], linkLine[i+1:linkLineLen])
+
+		return line, true
 	}
+
+	return "", false
 }
 
-// serveLink runs one connection: dial, HELLO, WELCOME, then frames until
-// the connection dies. It returns once the connection is gone.
-func serveLink(addr, agentID string) {
-	conn, err := net.DialTimeout("tcp", addr, linkDialTimeout)
-	if err != nil {
-		return
+func linkHandle(line string, now time.Time) (string, bool) {
+	if phase == linkUp {
+		return line, true
 	}
-	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(linkHelloTimeout))
-	id := hex.EncodeToString(settingsRecord.DeviceID[:])
-	if _, err := conn.Write([]byte(hello.Line(id, fwVersion, deviceToken(agentID)))); err != nil {
-		return
-	}
-	r := bufio.NewReaderSize(conn, linkReadBuf)
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return
-	}
-	if got, ok := hello.ParseWelcome(line); !ok || got != agentID {
+	if got, ok := hello.ParseWelcome(line); !ok || got != linkAgentID {
 		// Not our agent (or not an agent at all): never trust frames from it.
-		return
+		linkDrop(now)
+
+		return "", false
 	}
+	phase = linkUp
+	linkDeadline = now.Add(linkIdleTimeout)
+	rememberAgent(linkAddr, linkAgentID)
 
-	linkMu.Lock()
-	linkConn = conn
-	pendingAgent.addr, pendingAgent.id = addr, agentID
-	linkMu.Unlock()
-
-	for {
-		conn.SetReadDeadline(time.Now().Add(linkIdleTimeout))
-		line, err := r.ReadString('\n')
-		if err != nil {
-			break
-		}
-		linkMu.Lock()
-		linkLines.Push(strings.TrimRight(line, "\r\n"))
-		linkMu.Unlock()
-	}
-
-	linkMu.Lock()
-	linkConn = nil
-	linkMu.Unlock()
+	return "", false
 }
 
 // pollLine hands the core the next frame: TCP first, the USB serial port as
 // the fallback and the development path.
 func pollLine() (string, bool) {
-	linkMu.Lock()
-	line, ok := linkLines.Pop()
-	remember := pendingAgent
-	pendingAgent.addr = ""
-	linkMu.Unlock()
-	if remember.addr != "" {
-		rememberAgent(remember.addr, remember.id)
-	}
-	if ok {
+	radioPump()
+	now := time.Now()
+	linkStep(now)
+	if line, ok := linkReadLine(now); ok {
 		tcpFrame = true
 
 		return line, true
 	}
 
-	line, ok = pollSerialLine()
+	if phase == linkUp {
+		drainSerialWhileLinked(now)
+
+		return "", false
+	}
+	line, ok := pollSerialLine()
 	if ok {
 		tcpFrame = false
 	}
@@ -238,9 +338,32 @@ func pollLine() (string, bool) {
 	return line, ok
 }
 
-// sendCommand goes to whoever is connected over TCP, else to the serial port.
+// drainSerialWhileLinked keeps one source of truth while WiFi carries the
+// frames: whatever a host on the USB cable sends is discarded, but it hears
+// "ok wifi" every two seconds for as long as its bytes keep coming, so its
+// echo timer never reopens the port. Whole lines cannot be relied on here:
+// the UART ring overflows while a WiFi frame is being drawn.
+func drainSerialWhileLinked(now time.Time) {
+	if machine.Serial.Buffered() == 0 {
+		return
+	}
+	for {
+		if _, ok := pollSerialLine(); !ok {
+			break
+		}
+	}
+	if now.Sub(lastSerialAck) >= serialAckPeriod {
+		lastSerialAck = now
+		sendSerialLine("ok wifi")
+	}
+}
+
+// sendCommand goes to the agent over TCP when connected, else to the serial port.
 func sendCommand(cmd string) {
-	sendLinkLine("CMD " + cmd)
+	line := "CMD " + cmd
+	if !writeTCP(line) {
+		sendSerialLine(line)
+	}
 }
 
 // sendEcho answers the frame over the link it came from.
@@ -253,80 +376,17 @@ func sendEcho(text string) {
 	sendSerialLine(text)
 }
 
-func sendLinkLine(line string) {
-	if !writeTCP(line) {
-		sendSerialLine(line)
-	}
-}
-
-// writeTCP writes a line to the agent connection; false when there is none
-// or the write failed (the reader notices the dead connection on its own).
+// writeTCP queues a line on the agent connection without blocking; false
+// when there is no connection or no room (the line is dropped, the next
+// frame brings a fresh echo anyway).
 func writeTCP(line string) bool {
-	linkMu.Lock()
-	conn := linkConn
-	linkMu.Unlock()
-	if conn == nil {
+	if phase < linkGreeting && !(phase == linkDialing && linkConn.State() == tcp.StateEstablished) {
 		return false
 	}
-	conn.SetWriteDeadline(time.Now().Add(linkWriteTimeout))
-	_, err := conn.Write([]byte(line + "\n"))
+	if linkConn.FreeOutput() < len(line)+1 {
+		return false
+	}
+	_, err := linkConn.Write([]byte(line + "\n"))
 
 	return err == nil
-}
-
-// radioNetdev adapts lneto's Berkeley layer to TinyGo's netdev interface so
-// the standard net package can dial over the radio. It is the spike's
-// adapter minus everything we do not use.
-type radioNetdev struct{}
-
-func (radioNetdev) GetHostByName(name string) (netip.Addr, error) {
-	if addr, err := netip.ParseAddr(name); err == nil {
-		return addr, nil
-	}
-	addrs, err := radioStack.LnetoStack().StackRetrying(radioBackoff).DoLookupIP(name, linkDialTimeout, linkDNSRetries)
-	if err != nil {
-		return netip.Addr{}, err
-	}
-
-	return addrs[0], nil
-}
-
-func (radioNetdev) Addr() (netip.Addr, error) {
-	return radioIP, nil
-}
-
-func (radioNetdev) Socket(domain, stype, protocol int) (int, error) {
-	return radioBerkeley.Socket(domain, stype, protocol)
-}
-
-func (radioNetdev) Bind(fd int, ip netip.AddrPort) error { return radioBerkeley.Bind(fd, ip) }
-
-func (d radioNetdev) Connect(fd int, host string, ip netip.AddrPort) error {
-	if (!ip.Addr().IsValid() || ip.Addr().IsUnspecified()) && host != "" {
-		resolved, err := d.GetHostByName(host)
-		if err != nil {
-			return err
-		}
-		ip = netip.AddrPortFrom(resolved, ip.Port())
-	}
-
-	return radioBerkeley.Connect(fd, host, ip)
-}
-
-func (radioNetdev) Listen(fd, backlog int) error { return radioBerkeley.Listen(fd, backlog) }
-
-func (radioNetdev) Accept(fd int) (int, netip.AddrPort, error) { return radioBerkeley.Accept(fd) }
-
-func (radioNetdev) Send(fd int, buf []byte, flags int, deadline time.Time) (int, error) {
-	return radioBerkeley.Send(fd, buf, flags, deadline)
-}
-
-func (radioNetdev) Recv(fd int, buf []byte, flags int, deadline time.Time) (int, error) {
-	return radioBerkeley.Recv(fd, buf, flags, deadline)
-}
-
-func (radioNetdev) Close(fd int) error { return radioBerkeley.Close(fd) }
-
-func (radioNetdev) SetSockOpt(fd, level, opt int, value interface{}) error {
-	return radioBerkeley.SetSockOpt(fd, level, opt, value)
 }

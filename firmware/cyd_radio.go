@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/x/xnet"
 	"tinygo.org/x/espradio"
 
 	"claudecontrol/firmware/internal/provision"
@@ -31,19 +30,15 @@ import (
 // happen once per boot; Scan any number of times; Connect once — a refused
 // association is retried only by rebooting (see connectScreen).
 const (
-	radioHostname = "gopherclaude"
-	radioPollTime = 5 * time.Millisecond
+	radioHostname  = "gopherclaude"
+	radioPollTime  = 5 * time.Millisecond
+	radioPumpBurst = 8 // frames moved per pump call before yielding to the UI
 
 	// lneto limits, the spike's values; the data link of stage A3 uses one
 	// outbound TCP connection plus the Hub's HTTP calls.
 	radioMaxTCPPorts  = 2
 	radioMaxUDPPorts  = 2
-	radioPassivePeers = 64
-	radioTCPPool      = 4
-	radioTCPQueue     = 4
-	radioTCPTxBuf     = 4096
-	radioTCPRxBuf     = 1024
-	radioTCPTimeout   = 2 * time.Second
+	radioPassivePeers = 8 // ARP neighbours: the gateway and the agent
 )
 
 var (
@@ -58,10 +53,8 @@ var (
 	// mask inside its own ISR passes, so we put our bits back ourselves.
 	tinygoInterrupts uint32
 
-	radioDev      *espradio.NetDev
-	radioStack    *espradio.Stack
-	radioGo       xnet.StackGo
-	radioBerkeley xnet.StackBerkeley
+	radioDev   *espradio.NetDev
+	radioStack *espradio.Stack
 
 	radioBackoff = lneto.BackoffStrategy(func(_ uint) time.Duration { return radioPollTime })
 )
@@ -86,6 +79,7 @@ func radioCall(f func()) {
 		default:
 		}
 		radioGuardInterrupts()
+		radioPump()
 		feedWatchdog()
 		drainSerial()
 		time.Sleep(touchPoll)
@@ -167,19 +161,6 @@ func radioConnect(ssid, password string) (netip.Addr, error) {
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	radioGo = radioStack.LnetoStack().StackGo(radioBackoff, xnet.StackGoConfig{
-		ListenerPoolConfig: xnet.TCPPoolConfig{
-			PoolSize:           radioTCPPool,
-			QueueSize:          radioTCPQueue,
-			TxBufSize:          radioTCPTxBuf,
-			RxBufSize:          radioTCPRxBuf,
-			EstablishedTimeout: radioTCPTimeout,
-			ClosingTimeout:     radioTCPTimeout,
-			NewBackoff:         func() lneto.BackoffStrategy { return radioBackoff },
-		},
-	})
-	radioBerkeley = *xnet.NewBerkeleyStack(radioGo.Socket)
-	go radioPump()
 
 	res, err := radioStack.SetupWithDHCP(espradio.DHCPConfig{})
 	if err != nil {
@@ -192,13 +173,19 @@ func radioConnect(ssid, password string) (netip.Addr, error) {
 	return radioIP, nil
 }
 
-// radioPump moves frames between the WiFi driver and the IP stack; it is the
-// only goroutine that may touch the driver's TX path.
+// radioPump moves frames between the WiFi driver and the IP stack. It runs
+// on the main goroutine, from pollLine and from radioCall's wait loop,
+// instead of on its own: a goroutine stack is 16 KB, and after WiFi is up
+// the heap has barely more than that left. Nothing else may touch the
+// driver's TX path.
 func radioPump() {
-	for {
+	if radioStack == nil {
+		return
+	}
+	for i := 0; i < radioPumpBurst; i++ {
 		send, recv, _ := radioStack.RecvAndSend()
 		if send == 0 && recv == 0 {
-			time.Sleep(radioPollTime)
+			return
 		}
 	}
 }

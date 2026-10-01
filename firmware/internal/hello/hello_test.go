@@ -38,25 +38,3 @@ func TestParseWelcome(t *testing.T) {
 		}
 	}
 }
-
-func TestLineQueueDropsOldest(t *testing.T) {
-	q := NewLineQueue(2)
-	if q.Push("a") || q.Push("b") {
-		t.Fatal("nothing dropped yet")
-	}
-	if !q.Push("c") {
-		t.Fatal("third push must drop the oldest")
-	}
-	if q.Len() != 2 {
-		t.Fatalf("len %d", q.Len())
-	}
-	if l, ok := q.Pop(); !ok || l != "b" {
-		t.Fatalf("pop %q %v", l, ok)
-	}
-	if l, ok := q.Pop(); !ok || l != "c" {
-		t.Fatalf("pop %q %v", l, ok)
-	}
-	if _, ok := q.Pop(); ok {
-		t.Fatal("empty queue popped")
-	}
-}

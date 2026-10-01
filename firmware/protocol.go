@@ -188,13 +188,16 @@ func parseWhole(line string) (frame, error) {
 		return frame{}, errBadFrame
 	}
 
-	f.fiveRst = parts[4]
-	f.fiveEta = parts[5]
-	f.weekRst = parts[7]
-	f.credTxt = parts[9]
-	f.modelRst = parts[11]
-	f.modelLabel = parts[12]
-	f.msg = parts[15]
+	// Substrings would pin the whole multi-kilobyte line for as long as any
+	// field (or a render cache holding one) lives; clones let it go at once,
+	// which matters on the display's ~13 KB of heap left after WiFi.
+	f.fiveRst = strings.Clone(parts[4])
+	f.fiveEta = strings.Clone(parts[5])
+	f.weekRst = strings.Clone(parts[7])
+	f.credTxt = strings.Clone(parts[9])
+	f.modelRst = strings.Clone(parts[11])
+	f.modelLabel = strings.Clone(parts[12])
+	f.msg = strings.Clone(parts[15])
 	f.sessions = parseSessions(parts[16])
 	f.extras, f.extraCount = parseExtras(parts[17])
 
@@ -238,7 +241,7 @@ func parseExtras(s string) ([maxExtras]providerStats, int) {
 			continue
 		}
 
-		st := providerStats{prov: fields[0][0], fiveRst: fields[4], weekRst: fields[6]}
+		st := providerStats{prov: fields[0][0], fiveRst: strings.Clone(fields[4]), weekRst: strings.Clone(fields[6])}
 
 		if !atoiAll(
 			[]*int{&st.chats, &st.wait, &st.fivePct, &st.weekPct, &st.prompts},
@@ -293,13 +296,13 @@ func parseSessions(s string) []sessionRow {
 		}
 
 		rows = append(rows, sessionRow{
-			name:  fields[0],
+			name:  strings.Clone(fields[0]),
 			phase: fields[1][0],
 			mins:  mins,
 			ctx:   ctx,
 			prov:  fields[4][0],
-			title: fields[5],
-			path:  fields[6],
+			title: strings.Clone(fields[5]),
+			path:  strings.Clone(fields[6]),
 		})
 	}
 
