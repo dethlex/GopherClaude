@@ -110,12 +110,12 @@ func touchXfer(cmd byte) int {
 	return int((uint16(rx[1])<<8 | uint16(rx[2])) >> 3) // 12-bit result
 }
 
-// pollInput samples the panel at 50 Hz, runs the gesture recognizer and maps
-// gestures onto the current page. A touch during standby only wakes the
-// screen: the press is swallowed so the wake tap never lands on a row.
-func pollInput(now time.Time, standby bool) input {
+// sampleGesture polls the panel once (at most every touchPoll) and feeds the
+// recognizer; began reports a press that started with this sample, which
+// the standby logic needs.
+func sampleGesture(now time.Time) (ev gesture.Event, began bool) {
 	if now.Sub(lastTouch) < touchPoll {
-		return input{}
+		return gesture.Event{}, false
 	}
 	lastTouch = now
 
@@ -135,9 +135,17 @@ func pollInput(now time.Time, standby bool) input {
 	}
 
 	wasPressed := touchRec.Pressed()
-	ev := touchRec.Feed(sample)
 
-	if standby && sample.Down && !wasPressed {
+	return touchRec.Feed(sample), sample.Down && !wasPressed
+}
+
+// pollInput samples the panel at 50 Hz, runs the gesture recognizer and maps
+// gestures onto the current page. A touch during standby only wakes the
+// screen: the press is swallowed so the wake tap never lands on a row.
+func pollInput(now time.Time, standby bool) input {
+	ev, began := sampleGesture(now)
+
+	if standby && began {
 		touchRec.Ignore()
 
 		return input{kind: evWake}
