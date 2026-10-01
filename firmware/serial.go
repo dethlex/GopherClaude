@@ -44,9 +44,9 @@ func pollSerialLine() (string, bool) {
 	return "", false
 }
 
-// sendCommand reports a button action back to the host agent, e.g.
-// "CMD focus\n". Writes are dropped while no host has the port open, which is
-// fine — a command only matters when the agent is listening.
-func sendCommand(cmd string) {
-	machine.Serial.Write([]byte("CMD " + cmd + "\n"))
+// sendSerialLine writes one line to the USB serial port. Writes are dropped
+// while no host has the port open, which is fine — a command only matters
+// when the agent is listening.
+func sendSerialLine(line string) {
+	machine.Serial.Write([]byte(line + "\n"))
 }

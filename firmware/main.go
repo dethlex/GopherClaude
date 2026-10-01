@@ -105,10 +105,10 @@ func main() {
 
 		now := time.Now()
 
-		if line, ok := pollSerialLine(); ok {
+		if line, ok := pollLine(); ok {
 			f, err := parseFrame(line)
 			if err != nil {
-				println("err: bad frame")
+				sendEcho("err: bad frame")
 			} else {
 				newAlert := f.totalWait() > 0 && (!linked || state.totalWait() == 0 || f.msg != state.msg)
 				if f.totalWait() == 0 || f.msg != state.msg {
@@ -149,7 +149,7 @@ func main() {
 					updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
 				}
 
-				println("ok chats=" + strconv.Itoa(f.totalChats()) + " wait=" + strconv.Itoa(f.totalWait()))
+				sendEcho("ok chats=" + strconv.Itoa(f.totalChats()) + " wait=" + strconv.Itoa(f.totalWait()))
 			}
 		}
 

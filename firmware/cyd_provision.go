@@ -55,6 +55,7 @@ func bootBoard() {
 			rec = provisionNetwork(rec)
 		case provision.StepConnect:
 			if connectScreen(&rec) {
+				startLink()
 				modalClear()
 
 				return
