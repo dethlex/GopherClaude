@@ -18,9 +18,15 @@ const (
 	SoundIconH = 16
 
 	// A finger is wider than the 20x16 icon; accept taps this far around it.
-	soundIconSlop = 8
+	soundIconSlop = 12
 
 	BannerTop = 204
+
+	// Finger calibration on a resistive panel is good to ~15 px, so the
+	// title and banner strips grow into the dead space next to them: the
+	// title down to the counters row, the banner up to the last list row.
+	titleSlop  = (SessRowBase - SessRowTopPad) - HeaderH
+	bannerSlop = BannerTop - (SessRowBase - SessRowTopPad + SessRowsMax*SessRowStep)
 
 	// Session list rows: text baseline SessRowBase + i*SessRowStep, each row
 	// painted from SessRowTopPad above its baseline, SessRowStep tall.
@@ -74,12 +80,12 @@ func HitSessions(x, y int) Hit {
 // hitChrome covers the regions both pages share: title, speaker icon, banner.
 func hitChrome(x, y int) (Hit, bool) {
 	switch {
-	case y >= BannerTop:
+	case y >= BannerTop-bannerSlop:
 		return Hit{Zone: ZoneBanner}, true
 	case x >= SoundIconX-soundIconSlop && x < SoundIconX+SoundIconW+soundIconSlop &&
 		y < SoundIconY+SoundIconH+soundIconSlop:
 		return Hit{Zone: ZoneSoundIcon}, true
-	case y < HeaderH && x < SpinnerX:
+	case y < HeaderH+titleSlop && x < SpinnerX:
 		return Hit{Zone: ZoneTitle}, true
 	}
 

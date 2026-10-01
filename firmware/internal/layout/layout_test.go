@@ -36,13 +36,20 @@ func TestHitSessionsRows(t *testing.T) {
 }
 
 func TestHitSessionsRowsBeyondCount(t *testing.T) {
-	// The gap between the last row and the banner belongs to nobody.
+	// Below the last row the banner takes over (its strip grows upwards to
+	// absorb calibration error), but the last row keeps its full height.
 	last := SessRowBase - SessRowTopPad + SessRowsMax*SessRowStep
-	if got := HitSessions(100, last); got.Zone != ZoneNone {
-		t.Fatalf("below the last row: got %+v, want ZoneNone", got)
+	if got := HitSessions(100, last-1); got.Zone != ZoneRow || got.Row != SessRowsMax-1 {
+		t.Fatalf("bottom of the last row: got %+v", got)
 	}
-	if got := HitSessions(100, BannerTop-1); got.Zone != ZoneNone {
-		t.Fatalf("just above the banner: got %+v, want ZoneNone", got)
+	if got := HitSessions(100, last); got.Zone != ZoneBanner {
+		t.Fatalf("below the last row: got %+v, want ZoneBanner", got)
+	}
+	if got := HitDashboard(160, BannerTop-10); got.Zone != ZoneBanner {
+		t.Fatalf("just above the banner on the dashboard: got %+v, want ZoneBanner", got)
+	}
+	if got := HitDashboard(160, 30); got.Zone != ZoneTitle {
+		t.Fatalf("just below the header: got %+v, want ZoneTitle", got)
 	}
 }
 
