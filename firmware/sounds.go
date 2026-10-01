@@ -17,6 +17,8 @@ const (
 	// Re-nudge: a single mid tone, distinct from the alert's two-tone
 	// chirp, repeated while a session keeps waiting.
 	nudgeDuration = 100 * time.Millisecond
+
+	tapClickDuration = 15 * time.Millisecond
 )
 
 var (
@@ -81,5 +83,16 @@ func beepNudge() {
 
 	tone(beepFreqLow)
 	time.Sleep(nudgeDuration)
+	tone(0)
+}
+
+// beepTap is the keyboard click: one very short high tone.
+func beepTap() {
+	if soundOff {
+		return
+	}
+
+	tone(beepFreqHigh)
+	time.Sleep(tapClickDuration)
 	tone(0)
 }

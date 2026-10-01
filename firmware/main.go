@@ -60,6 +60,10 @@ func main() {
 	// reflects them immediately.
 	soundOff = loadSettings().soundOff
 
+	// The display's first run (calibration, network, password) happens
+	// here, before anything else is drawn; the badge returns at once.
+	bootBoard()
+
 	var (
 		state        frame
 		linked       bool
@@ -249,7 +253,9 @@ func main() {
 			beepFlipUp()
 			updateLEDs(state, linked, alerting(now, alertUntil, muted), blinkOn)
 		case evOpenSettings:
-			// The settings menu arrives with the provisioning stage.
+			activity(now)
+			openSettings(state, linked)
+			repaintAll(state, linked)
 		}
 
 		// Re-nudge: remind about a still-waiting session. Audio only —
