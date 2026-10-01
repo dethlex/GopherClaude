@@ -135,7 +135,13 @@ func (s *SerialSink) open() error {
 		return err
 	}
 
-	port, err := serial.Open(path, &serial.Mode{BaudRate: baudRate})
+	// DTR and RTS stay low from the first instant: the CH340 feeds them to
+	// the ESP32's auto-reset circuit, and a driver that asserts them on open
+	// reboots the display every time the agent (re)opens the port.
+	port, err := serial.Open(path, &serial.Mode{
+		BaudRate:          baudRate,
+		InitialStatusBits: &serial.ModemOutputBits{RTS: false, DTR: false},
+	})
 	if err != nil {
 		return fmt.Errorf("open %q: %w", path, err)
 	}
